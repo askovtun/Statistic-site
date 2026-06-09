@@ -32,5 +32,11 @@ class Settings(BaseSettings):
     request_delay: float = 0.3
     request_retries: int = 3
 
+    # CORS — через кому: http://server,http://server:5173
+    cors_origins: str = "http://localhost:5173,http://localhost:3000"
+
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
 
 settings = Settings()
