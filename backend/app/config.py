@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     jira_vm_type_id: int = 1439
     jira_cluster_type_id: int = 1438
     jira_os_type_id: int = 1445
+    jira_physical_server_type_id: int = 1436
 
     # Zabbix
     zabbix_url: str = "https://zabbix.example.com"
@@ -19,13 +20,24 @@ class Settings(BaseSettings):
     zabbix_password: str = ""
     zabbix_api_token: str = ""
 
+    # vCenter (опційно — якщо vcenter_host порожній, ці метрики вимкнені)
+    vcenter_host: str = ""
+    vcenter_user: str = ""
+    vcenter_password: str = ""
+    vcenter_verify_ssl: bool = False
+
     # Analysis thresholds
     metrics_period_days: int = 30
     cpu_oversized_threshold: float = 20.0
     cpu_undersized_threshold: float = 80.0
     ram_oversized_threshold: float = 40.0
     ram_undersized_threshold: float = 85.0
+    disk_oversized_threshold: float = 20.0
+    disk_undersized_threshold: float = 85.0
     cluster_split_threshold: float = 30.0
+
+    # Windows Server Datacenter licensing
+    dc_license_price_usd: float = 769.0  # 2-core pack
 
     # HTTP
     ssl_verify: bool = True

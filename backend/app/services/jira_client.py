@@ -55,10 +55,25 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict | None = None)
     return {}
 
 
-def _attr_value(obj: dict, name: str) -> str | None:
+_attr_map_cache: dict[int, dict[int, str]] = {}
+
+
+async def _get_attr_map(client: httpx.AsyncClient, type_id: int) -> dict[int, str]:
+    """Return {objectTypeAttributeId: attributeName} for an object type.
+
+    The /iql/objects response only includes objectTypeAttributeId (numeric),
+    not the attribute name, so it must be resolved via a separate call.
+    """
+    if type_id not in _attr_map_cache:
+        data = await _get(client, f"/objecttype/{type_id}/attributes")
+        _attr_map_cache[type_id] = {a["id"]: a["name"] for a in data}
+    return _attr_map_cache[type_id]
+
+
+def _attr_value(obj: dict, attr_map: dict[int, str], name: str) -> str | None:
     """Extract a single string value from a Jira Insight attribute by name."""
     for attr in obj.get("attributes", []):
-        if attr.get("objectTypeAttributeId") and attr.get("objectTypeAttribute", {}).get("name") == name:
+        if attr_map.get(attr.get("objectTypeAttributeId")) == name:
             vals = attr.get("objectAttributeValues", [])
             if vals:
                 v = vals[0]
@@ -66,10 +81,10 @@ def _attr_value(obj: dict, name: str) -> str | None:
     return None
 
 
-def _attr_ref(obj: dict, name: str) -> str | None:
+def _attr_ref(obj: dict, attr_map: dict[int, str], name: str) -> str | None:
     """Extract a referenced object's name from a Jira Insight attribute."""
     for attr in obj.get("attributes", []):
-        if attr.get("objectTypeAttribute", {}).get("name") == name:
+        if attr_map.get(attr.get("objectTypeAttributeId")) == name:
             vals = attr.get("objectAttributeValues", [])
             if vals:
                 ref = vals[0].get("referencedObject")
@@ -109,17 +124,47 @@ async def _get_all_objects(type_id: int) -> list[dict]:
 async def get_all_vms() -> list[dict]:
     """Return list of VM dicts with keys: name, fqdn, status, os_family, cluster, vcpu, vram_gb."""
     raw = await _get_all_objects(settings.jira_vm_type_id)
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+        attr_map = await _get_attr_map(client, settings.jira_vm_type_id)
     result = []
     for obj in raw:
         name = obj.get("label") or obj.get("name", "")
         result.append({
             "name": name,
-            "fqdn": _attr_value(obj, "FQDN"),
-            "status": _attr_ref(obj, "Status"),
-            "os_family": _attr_ref(obj, "OS"),
-            "cluster": _attr_ref(obj, "Cluster"),
-            "vcpu": _int(_attr_value(obj, "vCPU Count")),
-            "vram_gb": _int(_attr_value(obj, "vRAM GB")),
+            "fqdn": _attr_value(obj, attr_map, "FQDN"),
+            "cname": _attr_value(obj, attr_map, "CNAME"),
+            "primary_ip": _attr_value(obj, attr_map, "Primary IP"),
+            "status": _attr_ref(obj, attr_map, "Status"),
+            "os_family": _attr_ref(obj, attr_map, "OS"),
+            "cluster": _attr_ref(obj, attr_map, "Cluster"),
+            "vcpu": _int(_attr_value(obj, attr_map, "vCPU Count")),
+            "vram_gb": _int(_attr_value(obj, attr_map, "vRAM GB")),
+        })
+    return result
+
+
+async def get_all_physical_servers() -> list[dict]:
+    """Return physical server dicts: name, fqdn, primary_ip, status, location,
+    manufacturer, model, cpu_count, cpu_cores, ram_gb, storage_config."""
+    raw = await _get_all_objects(settings.jira_physical_server_type_id)
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+        attr_map = await _get_attr_map(client, settings.jira_physical_server_type_id)
+    result = []
+    for obj in raw:
+        name = obj.get("label") or obj.get("name", "")
+        result.append({
+            "name":           name,
+            "fqdn":           _attr_value(obj, attr_map, "FQDN"),
+            "cname":          _attr_value(obj, attr_map, "CNAME"),
+            "primary_ip":     _attr_value(obj, attr_map, "Primary IP"),
+            "status":         _attr_ref(obj, attr_map, "Status"),
+            "location":       _attr_ref(obj, attr_map, "Location"),
+            "manufacturer":   _attr_value(obj, attr_map, "Manufacturer"),
+            "model":          _attr_value(obj, attr_map, "Model"),
+            "cpu_count":      _int(_attr_value(obj, attr_map, "CPU Count")),
+            "cpu_cores":      _int(_attr_value(obj, attr_map, "CPU Cores")),
+            "ram_gb":         _int(_attr_value(obj, attr_map, "RAM GB")),
+            "storage_config": _attr_value(obj, attr_map, "Storage Config"),
         })
     return result
 
@@ -127,12 +172,14 @@ async def get_all_vms() -> list[dict]:
 async def get_all_clusters() -> list[dict]:
     """Return list of cluster dicts with keys: name, host_count, total_cpu_cores."""
     raw = await _get_all_objects(settings.jira_cluster_type_id)
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+        attr_map = await _get_attr_map(client, settings.jira_cluster_type_id)
     result = []
     for obj in raw:
         result.append({
             "name": obj.get("label") or obj.get("name", ""),
-            "host_count": _int(_attr_value(obj, "Host Count")),
-            "total_cpu_cores": _int(_attr_value(obj, "Total CPU Cores")),
+            "host_count": _int(_attr_value(obj, attr_map, "Host Count")),
+            "total_cpu_cores": _int(_attr_value(obj, attr_map, "Total CPU Cores")),
         })
     return result
 

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 import httpx
@@ -16,11 +15,34 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-# Standard Zabbix item keys for resource monitoring
+# Standard Zabbix agent item keys
 ITEM_CPU_UTIL = "system.cpu.util"
 ITEM_MEM_USED = "vm.memory.size[used]"
 ITEM_MEM_TOTAL = "vm.memory.size[total]"
+# Canonical key used in metric_hourly for any vfs.fs.size[*,pfree] item
 ITEM_DISK_FREE_PCT = "vfs.fs.size[/,pfree]"
+
+# VMware Hypervisor template item keys (canonical — stored after normalization)
+ITEM_VMWARE_CPU_PCT = "vmware.hv.cpu.usage.perf"
+ITEM_VMWARE_MEM_USED = "vmware.hv.memory.used"
+ITEM_VMWARE_MEM_TOTAL = "vmware.hv.hw.memory"
+
+_CORE_ITEM_KEYS = [ITEM_CPU_UTIL, ITEM_MEM_USED, ITEM_MEM_TOTAL]
+# Search substring that matches all filesystem free-% items across Linux/Windows
+_DISK_FREE_SEARCH = "pfree"
+# VMware HV item key prefixes (parameterized in Zabbix, normalized on store)
+_VMWARE_HV_PREFIXES = (ITEM_VMWARE_CPU_PCT, ITEM_VMWARE_MEM_USED, ITEM_VMWARE_MEM_TOTAL)
+
+# history.get on this Zabbix instance is dramatically slower for multi-itemid
+# queries than for single-item ones, so we fetch one item at a time with
+# bounded concurrency.
+_HISTORY_CONCURRENCY = 10
+
+_EMPTY_METRICS = {
+    "cpu_pct": None, "cpu_pct_max": None,
+    "ram_pct": None, "ram_pct_max": None,
+    "disk_free_pct": None, "disk_free_pct_min": None,
+}
 
 
 class ZabbixClient:
@@ -40,13 +62,13 @@ class ZabbixClient:
             "params": params,
             "id": self._next_id(),
         }
+        headers = {}
         if self._token:
-            payload["auth"] = self._token
+            headers["Authorization"] = f"Bearer {self._token}"
 
         for attempt in range(1, settings.request_retries + 1):
             try:
-                r = await client.post(self._url, json=payload, timeout=60,
-                                      verify=settings.ssl_verify)
+                r = await client.post(self._url, json=payload, timeout=120, headers=headers)
                 if r.status_code in (429, 502, 503, 504):
                     wait = settings.request_delay * attempt * 3
                     log.warning("Zabbix HTTP %s, retry %s in %.1fs", r.status_code, attempt, wait)
@@ -81,104 +103,109 @@ class ZabbixClient:
         log.debug("Zabbix authenticated, token acquired")
 
     async def get_all_hosts(self) -> list[dict]:
-        """Return list of {hostid, host, name, status, groups[]}."""
-        async with httpx.AsyncClient() as client:
+        """Return list of {hostid, host, name, status, groups[], interfaces[]}."""
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
             await self._ensure_auth(client)
             hosts = await self._call(client, "host.get", {
                 "output": ["hostid", "host", "name", "status"],
                 "selectGroups": ["groupid", "name"],
+                "selectInterfaces": ["ip", "dns", "useip", "main"],
             })
         return hosts or []
 
-    async def get_host_metrics(
-        self,
-        host_names: list[str],
-        period_days: int | None = None,
-    ) -> dict[str, dict[str, float | None]]:
-        """Return average metric values per host name over the given period.
+    async def get_metric_items(self, hostids: list[str]) -> list[dict]:
+        """Return [{itemid, key_, hostid, value_type}] for CPU, RAM and disk items.
 
-        Returns:
-            { hostname: { "cpu_pct": float|None, "ram_pct": float|None, "disk_free_pct": float|None } }
+        CPU/RAM: exact key match for standard Zabbix agent items; substring
+        search "vmware.hv" for VMware Hypervisor template items (ESXi/HV hosts).
+        Disk: substring search "pfree" covers all filesystem variants.
         """
-        period = period_days or settings.metrics_period_days
-        time_till = int(time.time())
-        time_from = time_till - period * 86400
-
-        result: dict[str, dict[str, float | None]] = {
-            h: {"cpu_pct": None, "ram_pct": None, "disk_free_pct": None}
-            for h in host_names
-        }
-
-        if not host_names:
-            return result
-
-        async with httpx.AsyncClient() as client:
+        if not hostids:
+            return []
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
             await self._ensure_auth(client)
+            core_items, disk_items, vmware_items = await asyncio.gather(
+                self._call(client, "item.get", {
+                    "output": ["itemid", "key_", "hostid", "value_type"],
+                    "filter": {"key_": _CORE_ITEM_KEYS},
+                    "hostids": hostids,
+                    "monitored": True,
+                }),
+                self._call(client, "item.get", {
+                    "output": ["itemid", "key_", "hostid", "value_type"],
+                    "search": {"key_": _DISK_FREE_SEARCH},
+                    "hostids": hostids,
+                    "monitored": True,
+                }),
+                self._call(client, "item.get", {
+                    "output": ["itemid", "key_", "hostid", "value_type"],
+                    "search": {"key_": "vmware.hv"},
+                    "hostids": hostids,
+                    "monitored": True,
+                }),
+            )
+        # Keep only the VMware HV items we actually use
+        filtered_vmware = [
+            i for i in (vmware_items or [])
+            if any(i["key_"].startswith(p) for p in _VMWARE_HV_PREFIXES)
+        ]
+        return (core_items or []) + (disk_items or []) + filtered_vmware
 
-            # Fetch items for the needed keys
-            items = await self._call(client, "item.get", {
-                "output": ["itemid", "key_", "hostid", "lastvalue"],
-                "filter": {"key_": [ITEM_CPU_UTIL, ITEM_MEM_USED, ITEM_MEM_TOTAL, ITEM_DISK_FREE_PCT]},
-                "host": host_names,
-                "monitored": True,
-            })
-            if not items:
-                return result
+    async def get_recent_history(
+        self,
+        itemids_by_type: dict[str, list[str]],
+        time_from: int,
+        time_till: int,
+    ) -> dict[str, list[tuple[int, float]]]:
+        """Return raw history points {itemid: [(clock, value), ...]}.
 
-            # Build hostid → hostname map
-            host_map: dict[str, str] = {}
-            hosts_data = await self._call(client, "host.get", {
-                "output": ["hostid", "host"],
-                "filter": {"host": host_names},
-            })
-            for h in (hosts_data or []):
-                host_map[h["hostid"]] = h["host"]
+        Issues one history.get call per itemid, in parallel bounded by
+        _HISTORY_CONCURRENCY. Multi-itemid history.get queries are
+        dramatically slower on this Zabbix instance than the equivalent
+        per-item calls (a single item over 24h takes ~10s, while 10 items
+        over 5h times out after 2 minutes), so per-item calls are the only
+        way to fetch any meaningful window without timing out.
+        """
+        if not itemids_by_type:
+            return {}
 
-            # Group items by hostid and key
-            by_host: dict[str, dict[str, list[str]]] = {}
-            for item in items:
-                hid = item["hostid"]
-                key = item["key_"]
-                by_host.setdefault(hid, {}).setdefault(key, []).append(item["itemid"])
+        sem = asyncio.Semaphore(_HISTORY_CONCURRENCY)
 
-            # Fetch history averages per item
-            async def _avg(itemids: list[str]) -> float | None:
+        async def fetch_one(client: httpx.AsyncClient, value_type: str, itemid: str):
+            async with sem:
                 history = await self._call(client, "history.get", {
-                    "output": ["value"],
-                    "itemids": itemids,
+                    "output": ["itemid", "clock", "value"],
+                    "itemids": [itemid],
+                    "history": int(value_type),
                     "time_from": time_from,
                     "time_till": time_till,
-                    "history": 0,  # float
-                    "limit": 10000,
+                    "sortfield": "clock",
+                    "sortorder": "ASC",
                 })
-                if not history:
-                    return None
-                vals = [float(e["value"]) for e in history if e.get("value") is not None]
-                return sum(vals) / len(vals) if vals else None
-
-            for hid, keys in by_host.items():
-                hostname = host_map.get(hid)
-                if hostname not in result:
+            points: list[tuple[int, float]] = []
+            for row in history or []:
+                try:
+                    points.append((int(row["clock"]), float(row["value"])))
+                except (ValueError, TypeError, KeyError):
                     continue
+            return itemid, points
 
-                # CPU %
-                if ITEM_CPU_UTIL in keys:
-                    result[hostname]["cpu_pct"] = await _avg(keys[ITEM_CPU_UTIL])
-
-                # RAM %
-                used_ids = keys.get(ITEM_MEM_USED, [])
-                total_ids = keys.get(ITEM_MEM_TOTAL, [])
-                if used_ids and total_ids:
-                    used = await _avg(used_ids)
-                    total = await _avg(total_ids)
-                    if used is not None and total and total > 0:
-                        result[hostname]["ram_pct"] = used / total * 100
-
-                # Disk free %
-                if ITEM_DISK_FREE_PCT in keys:
-                    result[hostname]["disk_free_pct"] = await _avg(keys[ITEM_DISK_FREE_PCT])
-
-        return result
+        series: dict[str, list[tuple[int, float]]] = {}
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+            await self._ensure_auth(client)
+            tasks = [
+                fetch_one(client, value_type, itemid)
+                for value_type, itemids in itemids_by_type.items()
+                for itemid in itemids
+            ]
+            for result in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(result, Exception):
+                    log.warning("history.get failed for an item, skipping: %s", result)
+                    continue
+                itemid, points = result
+                if points:
+                    series[itemid] = points
+        return series
 
 
 _client = ZabbixClient()
@@ -188,5 +215,11 @@ async def get_all_hosts() -> list[dict]:
     return await _client.get_all_hosts()
 
 
-async def get_host_metrics(host_names: list[str], period_days: int | None = None) -> dict:
-    return await _client.get_host_metrics(host_names, period_days)
+async def get_metric_items(hostids: list[str]) -> list[dict]:
+    return await _client.get_metric_items(hostids)
+
+
+async def get_recent_history(
+    itemids_by_type: dict[str, list[str]], time_from: int, time_till: int
+) -> dict[str, list[tuple[int, float]]]:
+    return await _client.get_recent_history(itemids_by_type, time_from, time_till)

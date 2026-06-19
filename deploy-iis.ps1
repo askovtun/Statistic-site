@@ -5,8 +5,9 @@
 #   -Port      Порт backend uvicorn     (default: 8000)
 #
 param(
-    [string]$SitePath = "C:\inetpub\wwwroot\statistic-site",
-    [int]   $Port     = 8000
+    [string]$SitePath  = "C:\inetpub\wwwroot\statistic-site",
+    [int]   $Port      = 8000,
+    [string]$SiteHost  = "statistic.loc"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,9 +16,10 @@ $Root = Split-Path $MyInvocation.MyCommand.Path
 Write-Host "=== Statistic-site IIS Deploy ===" -ForegroundColor Cyan
 
 # ── 1. Збираємо фронтенд ──────────────────────────────────────────────────────
-Write-Host "`n[1/3] Збираємо React frontend..." -ForegroundColor Yellow
+Write-Host "`n[1/3] Збираємо React frontend (VITE_API_URL=http://${SiteHost}:${Port})..." -ForegroundColor Yellow
 Set-Location "$Root\frontend"
-node "$Root\frontend\node_modules\.bin\vite" build
+$env:VITE_API_URL = "http://${SiteHost}:${Port}"
+npx vite build
 if ($LASTEXITCODE -ne 0) { throw "Vite build failed" }
 
 # ── 2. Копіюємо dist/ на IIS ──────────────────────────────────────────────────
@@ -26,7 +28,7 @@ if (-not (Test-Path $SitePath)) {
     New-Item -ItemType Directory -Path $SitePath | Out-Null
 }
 Copy-Item -Path "$Root\frontend\dist\*" -Destination $SitePath -Recurse -Force
-Write-Host "  Файлів скопійовано: $(Get-ChildItem $SitePath -Recurse -File | Measure-Object | Select -Exp Count)"
+Write-Host "  Файлів скопійовано: $(Get-ChildItem $SitePath -Recurse -File | Measure-Object | Select-Object -Expand Count)"
 
 # ── 3. Копіюємо backend ───────────────────────────────────────────────────────
 Write-Host "`n[3/3] Копіюємо backend → $SitePath\backend ..." -ForegroundColor Yellow

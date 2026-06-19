@@ -8,11 +8,21 @@ venv/
 dist/
 build/
 .env
+backend/data/
+*.log
+
+# Database & runtime data
+backend/statistic.db
+backend/*.json
+
+# Debug / scratch scripts
+backend/debug_*.py
 
 # Node
 node_modules/
 frontend/dist/
 frontend/.env
+frontend/.env.production
 
 # IDE
 .vscode/settings.json

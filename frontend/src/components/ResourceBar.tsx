@@ -7,26 +7,44 @@ function barColor(pct: number): string {
 
 export default function ResourceBar({
   pct,
+  peakPct,
   label,
 }: {
   pct: number | null;
+  peakPct?: number | null;
   label?: string;
 }) {
   if (pct === null || pct === undefined) {
     return <span className="text-xs text-gray-400">—</span>;
   }
   const clamped = Math.min(100, Math.max(0, pct));
+  const clampedPeak =
+    peakPct !== null && peakPct !== undefined
+      ? Math.min(100, Math.max(0, peakPct))
+      : null;
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 bg-gray-200 rounded-full h-2 min-w-16">
+    <div className="flex items-center gap-1">
+      <div className="relative flex-1 bg-gray-200 rounded-full h-2 min-w-10">
         <div
           className={`h-2 rounded-full ${barColor(clamped)} transition-all`}
           style={{ width: `${clamped}%` }}
         />
+        {clampedPeak !== null && (
+          <div
+            title={`Пік: ${peakPct!.toFixed(1)}%`}
+            className="absolute top-0 h-2 w-0.5 bg-gray-700"
+            style={{ left: `${clampedPeak}%` }}
+          />
+        )}
       </div>
-      <span className="text-xs text-gray-600 w-12 text-right">
+      <span className="text-xs text-gray-600 w-10 text-right">
         {label ?? `${pct.toFixed(1)}%`}
       </span>
+      {clampedPeak !== null && (
+        <span className="text-xs text-gray-400 w-11 text-right" title={`Пік: ${peakPct!.toFixed(1)}%`}>
+          /{peakPct!.toFixed(1)}%
+        </span>
+      )}
     </div>
   );
 }

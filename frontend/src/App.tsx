@@ -4,7 +4,9 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Comparison from "./pages/Comparison";
 import Resources from "./pages/Resources";
+import PhysicalServers from "./pages/PhysicalServers";
 import Clusters from "./pages/Clusters";
+import Problems from "./pages/Problems";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +26,9 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="comparison" element={<Comparison />} />
             <Route path="resources" element={<Resources />} />
+            <Route path="physical-servers" element={<PhysicalServers />} />
             <Route path="clusters" element={<Clusters />} />
+            <Route path="problems" element={<Problems />} />
           </Route>
         </Routes>
       </BrowserRouter>
