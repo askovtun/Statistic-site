@@ -150,7 +150,11 @@ def match_vcenter_vm(
     return None
 
 
-def build_comparison(vms: list[dict], zabbix_hosts: list[dict]) -> ComparisonResponse:
+def build_comparison(
+    vms: list[dict],
+    zabbix_hosts: list[dict],
+    physical_servers: list[dict] | None = None,
+) -> ComparisonResponse:
     zabbix_index = build_zabbix_index(zabbix_hosts)
     matched_hostids: set[str] = set()
 
@@ -171,6 +175,7 @@ def build_comparison(vms: list[dict], zabbix_hosts: list[dict]) -> ComparisonRes
 
         items.append(ComparisonItem(
             name=vm.get("name", ""),
+            ci_type="vm",
             fqdn=vm.get("fqdn"),
             zabbix_name=zbx_name,
             cmdb_status=vm.get("status"),
@@ -179,6 +184,32 @@ def build_comparison(vms: list[dict], zabbix_hosts: list[dict]) -> ComparisonRes
             os_family=vm.get("os_family"),
             cluster=vm.get("cluster"),
             primary_ip=vm.get("primary_ip"),
+        ))
+
+    for srv in (physical_servers or []):
+        zhost = match_zabbix_host(srv, zabbix_index)
+
+        if zhost:
+            matched_hostids.add(zhost["hostid"])
+            status = "both"
+            zbx_status = "enabled" if zhost.get("status") == "0" else "disabled"
+            zbx_name = zhost.get("name") or None
+        else:
+            status = "cmdb_only"
+            zbx_status = None
+            zbx_name = None
+
+        items.append(ComparisonItem(
+            name=srv.get("name", ""),
+            ci_type="physical",
+            fqdn=srv.get("fqdn"),
+            zabbix_name=zbx_name,
+            cmdb_status=srv.get("status"),
+            zabbix_status=zbx_status,
+            comparison_status=status,
+            os_family=None,
+            cluster=None,
+            primary_ip=srv.get("primary_ip"),
         ))
 
     # Hosts in Zabbix but not CMDB (dedupe by hostid — multiple keys can map
@@ -192,6 +223,7 @@ def build_comparison(vms: list[dict], zabbix_hosts: list[dict]) -> ComparisonRes
         interfaces = h.get("interfaces") or []
         items.append(ComparisonItem(
             name=h.get("host", ""),
+            ci_type="vm",
             fqdn=None,
             zabbix_name=h.get("name") or None,
             cmdb_status=None,
@@ -206,11 +238,18 @@ def build_comparison(vms: list[dict], zabbix_hosts: list[dict]) -> ComparisonRes
     cmdb_only = sum(1 for i in items if i.comparison_status == "cmdb_only")
     zabbix_only = sum(1 for i in items if i.comparison_status == "zabbix_only")
 
+    total_vms = sum(1 for i in items if i.ci_type == "vm" and i.comparison_status != "zabbix_only")
+    vm_monitored = sum(1 for i in items if i.ci_type == "vm" and i.comparison_status == "both")
+    vm_cmdb_only = sum(1 for i in items if i.ci_type == "vm" and i.comparison_status == "cmdb_only")
+
     return ComparisonResponse(
         total=len(items),
         monitored=monitored,
         cmdb_only=cmdb_only,
         zabbix_only=zabbix_only,
+        total_vms=total_vms,
+        vm_monitored=vm_monitored,
+        vm_cmdb_only=vm_cmdb_only,
         items=items,
     )
 
@@ -238,6 +277,32 @@ def _eval_metric(
     return None
 
 
+def _suggest_vcpu(vcpu: int | None, avg: float, peak: float | None, oversized: bool) -> int | None:
+    if not vcpu:
+        return None
+    p = peak if peak is not None else avg
+    if oversized:
+        # 2× headroom over peak; must stay below current count to be useful
+        rec = max(1, math.ceil(vcpu * p / 100 * 2.0))
+        return rec if rec < vcpu else None
+    else:
+        # 1.5× headroom over peak; must exceed current count
+        rec = math.ceil(vcpu * p / 100 * 1.5)
+        return max(vcpu + 1, rec)
+
+
+def _suggest_vram(vram_gb: int | None, avg: float, peak: float | None, oversized: bool) -> int | None:
+    if not vram_gb:
+        return None
+    p = peak if peak is not None else avg
+    if oversized:
+        rec = max(1, math.ceil(vram_gb * p / 100 * 2.0))
+        return rec if rec < vram_gb else None
+    else:
+        rec = math.ceil(vram_gb * p / 100 * 1.5)
+        return max(vram_gb + 1, rec)
+
+
 def _resource_status_and_recommendations(
     cpu_pct: float | None,
     cpu_max: float | None,
@@ -253,17 +318,20 @@ def _resource_status_and_recommendations(
     vc_ram_max: float | None = None,
     zbx_disk_used_pct: float | None = None,
     zbx_disk_used_max: float | None = None,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], int | None, int | None]:
+    """Returns (status, recommendations, recommended_vcpu, recommended_vram_gb)."""
     has_any = any(x is not None for x in [
         cpu_pct, ram_pct, vc_cpu_pct, vc_ram_pct, disk_used_pct, zbx_disk_used_pct,
     ])
     if not has_any:
-        return "no_data", []
+        return "no_data", [], None, None
 
     recs: list[str] = []
     statuses: list[str] = []
+    rec_vcpu: int | None = None
+    rec_vram: int | None = None
 
-    # ── CPU: use Zabbix, vCenter, or both when both available ─────────────────
+    # ── CPU: Zabbix, vCenter, or both ────────────────────────────────────────
     both_cpu = cpu_pct is not None and vc_cpu_pct is not None
     cpu_sources: list[tuple[str | None, float, float | None]] = []
     if cpu_pct is not None:
@@ -277,61 +345,105 @@ def _resource_status_and_recommendations(
         if cpu_status == "undersized":
             statuses.append("undersized")
             if avg > settings.cpu_undersized_threshold:
-                suggested = math.ceil((vcpu or 2) * 1.5)
+                suggested = _suggest_vcpu(vcpu, avg, peak, oversized=False)
                 recs.append(
-                    f"{prefix}Збільшити vCPU: середнє використання {avg:.1f}% — "
-                    f"рекомендовано {suggested} vCPU"
-                    + (f" (зараз {vcpu})" if vcpu else "")
+                    f"{prefix}CPU: серед. {avg:.1f}%, пік {peak:.1f}%"
+                    + (f" — збільшити vCPU {vcpu}→{suggested}" if suggested and vcpu else
+                       f" — перевищує поріг {settings.cpu_undersized_threshold:.0f}%")
                 )
+                if rec_vcpu is None:
+                    rec_vcpu = suggested
             else:
                 recs.append(
-                    f"{prefix}CPU: середнє {avg:.1f}% в нормі, але пік сягав {peak:.1f}% "
-                    f"(>{settings.cpu_undersized_threshold:.0f}%) — слідкуйте за навантаженням"
+                    f"{prefix}CPU: серед. {avg:.1f}%, але пік {peak:.1f}%"
+                    f" (>{settings.cpu_undersized_threshold:.0f}%) — слідкуйте за навантаженням"
                 )
         elif cpu_status == "oversized":
             statuses.append("oversized")
-            suggested = max(1, math.ceil((vcpu or 2) * avg / 60))
+            suggested = _suggest_vcpu(vcpu, avg, peak, oversized=True)
             recs.append(
-                f"{prefix}Зменшити vCPU: середнє використання {avg:.1f}%"
+                f"{prefix}CPU: серед. {avg:.1f}%"
                 + (f", пік {peak:.1f}%" if peak is not None else "")
-                + f" — рекомендовано {suggested} vCPU"
-                + (f" (зараз {vcpu})" if vcpu else "")
+                + (f" — зменшити vCPU {vcpu}→{suggested}" if suggested and vcpu else " — надлишок ресурсу")
             )
+            if rec_vcpu is None:
+                rec_vcpu = suggested
 
-    # ── RAM: use Zabbix, vCenter, or both when both available ─────────────────
+    # ── RAM: Zabbix, vCenter, or both ────────────────────────────────────────
+    # When both sources are present, vCenter is authoritative for sizing decisions:
+    # the hypervisor measures the actual working set, while the guest-OS figure
+    # from Zabbix includes Linux page cache (memory the OS uses as disk cache but
+    # releases immediately on demand), which causes artificially high readings.
     both_ram = ram_pct is not None and vc_ram_pct is not None
-    ram_sources: list[tuple[str | None, float, float | None]] = []
-    if ram_pct is not None:
-        ram_sources.append(("Zabbix" if both_ram else None, ram_pct, ram_max))
-    if vc_ram_pct is not None:
-        ram_sources.append(("vCenter" if both_ram else None, vc_ram_pct, vc_ram_max))
 
-    for source, avg, peak in ram_sources:
-        prefix = f"[{source}] " if source else ""
-        ram_status = _eval_metric(avg, peak, settings.ram_oversized_threshold, settings.ram_undersized_threshold)
-        if ram_status == "undersized":
+    if both_ram:
+        vc_rs = _eval_metric(vc_ram_pct, vc_ram_max, settings.ram_oversized_threshold, settings.ram_undersized_threshold)
+        if vc_rs == "undersized":
             statuses.append("undersized")
-            if avg > settings.ram_undersized_threshold:
-                suggested = math.ceil((vram_gb or 4) * 1.5)
+            if vc_ram_pct > settings.ram_undersized_threshold:
+                suggested = _suggest_vram(vram_gb, vc_ram_pct, vc_ram_max, oversized=False)
                 recs.append(
-                    f"{prefix}Збільшити vRAM: середнє використання {avg:.1f}% — "
-                    f"рекомендовано {suggested} GB"
-                    + (f" (зараз {vram_gb} GB)" if vram_gb else "")
+                    f"[vCenter] RAM: серед. {vc_ram_pct:.1f}%, пік {vc_ram_max:.1f}%"
+                    + (f" — збільшити {vram_gb}→{suggested} GB" if suggested and vram_gb else
+                       f" — перевищує поріг {settings.ram_undersized_threshold:.0f}%")
                 )
+                if rec_vram is None:
+                    rec_vram = suggested
             else:
                 recs.append(
-                    f"{prefix}RAM: середнє {avg:.1f}% в нормі, але пік сягав {peak:.1f}% "
-                    f"(>{settings.ram_undersized_threshold:.0f}%) — слідкуйте за навантаженням"
+                    f"[vCenter] RAM: серед. {vc_ram_pct:.1f}%, але пік {vc_ram_max:.1f}%"
+                    f" (>{settings.ram_undersized_threshold:.0f}%) — слідкуйте"
                 )
-        elif ram_status == "oversized":
+        elif vc_rs == "oversized":
             statuses.append("oversized")
-            suggested = max(1, math.ceil((vram_gb or 4) * avg / 60))
+            suggested = _suggest_vram(vram_gb, vc_ram_pct, vc_ram_max, oversized=True)
             recs.append(
-                f"{prefix}Зменшити vRAM: середнє використання {avg:.1f}%"
-                + (f", пік {peak:.1f}%" if peak is not None else "")
-                + f" — рекомендовано {suggested} GB"
-                + (f" (зараз {vram_gb} GB)" if vram_gb else "")
+                f"[vCenter] RAM: серед. {vc_ram_pct:.1f}%"
+                + (f", пік {vc_ram_max:.1f}%" if vc_ram_max is not None else "")
+                + (f" — зменшити {vram_gb}→{suggested} GB" if suggested and vram_gb else " — надлишок ресурсу")
             )
+            if rec_vram is None:
+                rec_vram = suggested
+        # Zabbix RAM shown as informational note only when it significantly
+        # exceeds vCenter — indicates Linux page cache (no action needed)
+        if ram_pct > vc_ram_pct + 30:
+            recs.append(
+                f"[Zabbix] RAM: {ram_pct:.1f}% (вище через Linux page cache — не потребує дій)"
+            )
+    else:
+        # Only one source — evaluate and recommend normally
+        _ram_avg = ram_pct if ram_pct is not None else vc_ram_pct
+        _ram_peak = ram_max if ram_pct is not None else vc_ram_max
+        _ram_src = None if ram_pct is not None else "vCenter"
+        if _ram_avg is not None:
+            prefix = f"[{_ram_src}] " if _ram_src else ""
+            ram_status = _eval_metric(_ram_avg, _ram_peak, settings.ram_oversized_threshold, settings.ram_undersized_threshold)
+            if ram_status == "undersized":
+                statuses.append("undersized")
+                if _ram_avg > settings.ram_undersized_threshold:
+                    suggested = _suggest_vram(vram_gb, _ram_avg, _ram_peak, oversized=False)
+                    recs.append(
+                        f"{prefix}RAM: серед. {_ram_avg:.1f}%, пік {_ram_peak:.1f}%"
+                        + (f" — збільшити {vram_gb}→{suggested} GB" if suggested and vram_gb else
+                           f" — перевищує поріг {settings.ram_undersized_threshold:.0f}%")
+                    )
+                    if rec_vram is None:
+                        rec_vram = suggested
+                else:
+                    recs.append(
+                        f"{prefix}RAM: серед. {_ram_avg:.1f}%, але пік {_ram_peak:.1f}%"
+                        f" (>{settings.ram_undersized_threshold:.0f}%) — слідкуйте"
+                    )
+            elif ram_status == "oversized":
+                statuses.append("oversized")
+                suggested = _suggest_vram(vram_gb, _ram_avg, _ram_peak, oversized=True)
+                recs.append(
+                    f"{prefix}RAM: серед. {_ram_avg:.1f}%"
+                    + (f", пік {_ram_peak:.1f}%" if _ram_peak is not None else "")
+                    + (f" — зменшити {vram_gb}→{suggested} GB" if suggested and vram_gb else " — надлишок ресурсу")
+                )
+                if rec_vram is None:
+                    rec_vram = suggested
 
     # ── Disk: vCenter + Zabbix ───────────────────────────────────────────────
     both_disk = disk_used_pct is not None and zbx_disk_used_pct is not None
@@ -349,13 +461,13 @@ def _resource_status_and_recommendations(
         if disk_status == "undersized":
             statuses.append("undersized")
             recs.append(
-                f"{prefix}Диск: використано {avg:.1f}%"
+                f"{prefix}Диск: {avg:.1f}%"
                 + (f", пік {peak:.1f}%" if peak is not None else "")
-                + " — розгляньте розширення диску"
+                + " — розгляньте розширення"
             )
         elif disk_status == "oversized":
             statuses.append("oversized")
-            recs.append(f"{prefix}Диск: використано лише {avg:.1f}% — можна зменшити виділений простір")
+            recs.append(f"{prefix}Диск: лише {avg:.1f}% — можна зменшити")
 
     if "undersized" in statuses:
         final_status = "undersized"
@@ -364,16 +476,18 @@ def _resource_status_and_recommendations(
     else:
         final_status = "optimal"
 
-    return final_status, recs
+    return final_status, recs, rec_vcpu, rec_vram
 
 
 def build_resources(
     vms: list[dict],
     metrics: dict[str, dict[str, float | None]],
     vc_metrics: dict[str, dict[str, float | None]] | None = None,
+    trend_data: dict[str, dict] | None = None,
 ) -> ResourceResponse:
     items: list[ResourceItem] = []
     vc_metrics = vc_metrics or {}
+    trend_data = trend_data or {}
 
     for vm in vms:
         name = vm.get("name", "")
@@ -382,6 +496,7 @@ def build_resources(
 
         m = metrics.get(name, {})
         vc = vc_metrics.get(name, {})
+        td = trend_data.get(name, {})
 
         cpu_pct = m.get("cpu_pct")
         cpu_max = m.get("cpu_pct_max")
@@ -399,17 +514,13 @@ def build_resources(
         disk_io = vc.get("disk_io_kbps")
         disk_io_max = vc.get("disk_io_kbps_max")
 
-        # Zabbix disk: convert free % → used %
-        # disk_free_pct_min = lowest free % seen → highest used % (peak)
         zbx_disk_used_pct = (100.0 - disk_free) if disk_free is not None else None
         zbx_disk_used_max = (100.0 - disk_free_min) if disk_free_min is not None else None
 
-        # Effective disk used % for the display bar:
-        # prefer vCenter (storage-level), fall back to Zabbix (guest FS)
         eff_disk_used_pct = disk_used_pct if disk_used_pct is not None else zbx_disk_used_pct
         eff_disk_used_max = disk_used_max if disk_used_max is not None else zbx_disk_used_max
 
-        status, recs = _resource_status_and_recommendations(
+        status, recs, rec_vcpu, rec_vram = _resource_status_and_recommendations(
             cpu_pct, cpu_max, ram_pct, ram_max, vm.get("vcpu"), vm.get("vram_gb"),
             disk_used_pct, disk_used_max,
             vc_cpu_pct, vc_cpu_max, vc_ram_pct, vc_ram_max,
@@ -440,6 +551,11 @@ def build_resources(
             max_disk_io_kbps=round(disk_io_max, 1) if disk_io_max is not None else None,
             resource_status=status,
             recommendations=recs,
+            trend_cpu_delta=td.get("trend_cpu_delta"),
+            trend_ram_delta=td.get("trend_ram_delta"),
+            availability_pct=td.get("availability_pct"),
+            recommended_vcpu=rec_vcpu,
+            recommended_vram_gb=rec_vram,
         ))
 
     cnt = lambda s: sum(1 for i in items if i.resource_status == s)
@@ -478,7 +594,7 @@ def build_physical_servers(
         is_monitored = name in metrics
 
         if cpu_pct is not None or ram_pct is not None:
-            status, _ = _resource_status_and_recommendations(
+            status, _, _, _ = _resource_status_and_recommendations(
                 cpu_pct, cpu_max, ram_pct, ram_max, None, None
             )
         else:

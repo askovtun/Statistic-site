@@ -28,6 +28,21 @@ const statusLabel: Record<ResourceItem["resource_status"], string> = {
   no_data: "Немає даних",
 };
 
+function TrendBadge({ delta }: { delta: number | null }) {
+  if (delta == null) return <span className="text-gray-300 text-xs">—</span>;
+  const abs = Math.abs(delta);
+  if (abs < 2) return <span className="text-xs text-gray-400 ml-1">→</span>;
+  if (delta > 0)
+    return <span className="text-xs text-red-500 font-medium ml-1" title={`+${delta.toFixed(1)}% порівняно з попереднім періодом`}>↑{delta.toFixed(1)}%</span>;
+  return <span className="text-xs text-green-500 font-medium ml-1" title={`${delta.toFixed(1)}% порівняно з попереднім періодом`}>↓{abs.toFixed(1)}%</span>;
+}
+
+function AvailBadge({ pct }: { pct: number | null }) {
+  if (pct == null) return <span className="text-gray-300 text-xs">—</span>;
+  const color = pct >= 99 ? "text-green-600" : pct >= 95 ? "text-amber-600" : "text-red-600";
+  return <span className={`text-xs font-semibold ${color}`} title="Відсоток часу з наявними даними Zabbix">{pct.toFixed(1)}%</span>;
+}
+
 type ColumnKey = "name" | "cluster" | "os_family" | "vcpu" | "vram_gb" | "resource_status";
 
 const columnValue: Record<ColumnKey, (i: ResourceItem) => string> = {
@@ -46,7 +61,8 @@ type NumericColumnKey =
   | "vc_max_ram_pct"
   | "zbx_disk_used_pct"
   | "max_disk_used_pct"
-  | "max_disk_io_kbps";
+  | "max_disk_io_kbps"
+  | "availability_pct";
 
 const VISIBLE_COLUMNS: ColumnDef[] = [
   { key: "cluster",         label: "Кластер" },
@@ -60,23 +76,22 @@ const VISIBLE_COLUMNS: ColumnDef[] = [
   { key: "ram_vc",          label: "RAM % (vCenter)" },
   { key: "disk_pct",        label: "Диск % (vCenter)" },
   { key: "disk_io",         label: "Disk I/O" },
+  { key: "availability",    label: "Доступність" },
+  { key: "rightsizing",     label: "Right-sizing" },
   { key: "status",          label: "Статус" },
   { key: "recommendations", label: "Рекомендації" },
 ];
 type ColKey = typeof VISIBLE_COLUMNS[number]["key"];
 
-// Filter values are expressed in the same units shown to the user, so
-// Disk I/O (displayed in МБ/с) is converted from the stored КБ/с.
-// Zabbix disk is stored as free % → displayed/filtered as used % (100 - free).
 const numericColumnValue: Record<NumericColumnKey, (i: ResourceItem) => number | null> = {
   max_cpu_pct: (i) => i.max_cpu_pct,
   max_ram_pct: (i) => i.max_ram_pct,
   vc_max_cpu_pct: (i) => i.vc_max_cpu_pct,
   vc_max_ram_pct: (i) => i.vc_max_ram_pct,
-  // min_disk_free_pct = lowest free % = highest used % peak
   zbx_disk_used_pct: (i) => (i.min_disk_free_pct != null ? 100 - i.min_disk_free_pct : null),
   max_disk_used_pct: (i) => i.max_disk_used_pct,
   max_disk_io_kbps: (i) => (i.max_disk_io_kbps != null ? i.max_disk_io_kbps / 1024 : null),
+  availability_pct: (i) => i.availability_pct,
 };
 
 export default function Resources() {
@@ -90,6 +105,7 @@ export default function Resources() {
   const [search, setSearch] = useState("");
   const [cluster, setCluster] = useState("");
   const [osFamily, setOsFamily] = useState("");
+  const [groupByCluster, setGroupByCluster] = useState(false);
   const [page, setPage] = useState(1);
   const [columnFilters, setColumnFilters] = useState<Partial<Record<ColumnKey, Set<string>>>>({});
   const [numericFilters, setNumericFilters] = useState<Partial<Record<NumericColumnKey, NumberRange>>>({});
@@ -102,7 +118,7 @@ export default function Resources() {
 
   useEffect(() => {
     setPage(1);
-  }, [filter, search, cluster, osFamily, days, columnFilters, numericFilters]);
+  }, [filter, search, cluster, osFamily, days, columnFilters, numericFilters, groupByCluster]);
 
   function setColumnFilter(key: ColumnKey, value: Set<string> | null) {
     setColumnFilters((prev) => {
@@ -140,7 +156,7 @@ export default function Resources() {
     new Set((data?.items ?? []).map((i) => i.os_family).filter((o): o is string => !!o))
   ).sort();
 
-  const items = (data?.items ?? []).filter((i) => {
+  const filteredItems = (data?.items ?? []).filter((i) => {
     if (filter !== "all" && i.resource_status !== filter) return false;
     if (cluster && i.cluster !== cluster) return false;
     if (osFamily && i.os_family !== osFamily) return false;
@@ -167,11 +183,40 @@ export default function Resources() {
     return true;
   });
 
-  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
-  const pageItems = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // Grouping by cluster
+  type TableRow =
+    | { type: "header"; cluster: string; count: number }
+    | { type: "item"; item: ResourceItem };
+
+  const tableRows: TableRow[] = useMemo(() => {
+    if (!groupByCluster) return filteredItems.map((item) => ({ type: "item" as const, item }));
+    const sorted = [...filteredItems].sort((a, b) => {
+      const ca = a.cluster ?? "zzz";
+      const cb = b.cluster ?? "zzz";
+      return ca.localeCompare(cb) || a.name.localeCompare(b.name);
+    });
+    const rows: TableRow[] = [];
+    let lastCluster: string | null | undefined = undefined;
+    for (const item of sorted) {
+      if (item.cluster !== lastCluster) {
+        const count = sorted.filter((i) => i.cluster === item.cluster).length;
+        rows.push({ type: "header", cluster: item.cluster ?? "Без кластера", count });
+        lastCluster = item.cluster;
+      }
+      rows.push({ type: "item", item });
+    }
+    return rows;
+  }, [filteredItems, groupByCluster]);
+
+  const totalPages = groupByCluster
+    ? 1
+    : Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
+  const pageRows = groupByCluster
+    ? tableRows
+    : tableRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   function handleExport() {
-    const rows = items.map((i) => ({
+    const rows = filteredItems.map((i) => ({
       "ВМ": i.name,
       "FQDN": i.fqdn ?? "",
       "IP": i.primary_ip ?? "",
@@ -181,18 +226,23 @@ export default function Resources() {
       "vRAM (GB)": i.vram_gb ?? "",
       "CPU % (середнє)": i.avg_cpu_pct ?? "",
       "CPU % (пік)": i.max_cpu_pct ?? "",
+      "Тренд CPU Δ%": i.trend_cpu_delta ?? "",
       "RAM % (середнє)": i.avg_ram_pct ?? "",
       "RAM % (пік)": i.max_ram_pct ?? "",
-      "Диск % вик. Zabbix (середнє)": i.avg_disk_free_pct != null ? +(100 - i.avg_disk_free_pct).toFixed(1) : "",
+      "Тренд RAM Δ%": i.trend_ram_delta ?? "",
+      "Доступність %": i.availability_pct ?? "",
+      "Диск % вик. Zabbix (серед.)": i.avg_disk_free_pct != null ? +(100 - i.avg_disk_free_pct).toFixed(1) : "",
       "Диск % вик. Zabbix (пік)": i.min_disk_free_pct != null ? +(100 - i.min_disk_free_pct).toFixed(1) : "",
-      "CPU % vCenter (середнє)": i.vc_avg_cpu_pct ?? "",
+      "CPU % vCenter (серед.)": i.vc_avg_cpu_pct ?? "",
       "CPU % vCenter (пік)": i.vc_max_cpu_pct ?? "",
-      "RAM % vCenter (середнє)": i.vc_avg_ram_pct ?? "",
+      "RAM % vCenter (серед.)": i.vc_avg_ram_pct ?? "",
       "RAM % vCenter (пік)": i.vc_max_ram_pct ?? "",
-      "Диск % вик. (середнє)": i.avg_disk_used_pct ?? "",
-      "Диск % вик. (пік)": i.max_disk_used_pct ?? "",
-      "Disk I/O КБ/с (середнє)": i.avg_disk_io_kbps ?? "",
+      "Диск % (серед.)": i.avg_disk_used_pct ?? "",
+      "Диск % (пік)": i.max_disk_used_pct ?? "",
+      "Disk I/O КБ/с (серед.)": i.avg_disk_io_kbps ?? "",
       "Disk I/O КБ/с (пік)": i.max_disk_io_kbps ?? "",
+      "Рек. vCPU": i.recommended_vcpu ?? "",
+      "Рек. vRAM GB": i.recommended_vram_gb ?? "",
       "Статус": statusLabel[i.resource_status],
       "Рекомендації": i.recommendations.join("; "),
     }));
@@ -241,11 +291,11 @@ export default function Resources() {
         </div>
       </div>
       <p className="text-sm text-gray-500 mb-6">
-        Середнє використання CPU / RAM / Диск — Zabbix (гостьовий рівень) та vCenter (гіпервізор) за останні {days} днів
+        Середнє використання CPU / RAM / Диск — Zabbix + vCenter за останні {days} днів. Тренд: поточний period vs попередній.
       </p>
 
       {data && (
-        <div className="flex gap-3 mb-5">
+        <div className="flex gap-3 mb-5 flex-wrap">
           {(
             [
               { key: "all", label: `Всі (${data.total})` },
@@ -269,7 +319,7 @@ export default function Resources() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-3 mb-4">
+      <div className="flex flex-wrap gap-3 mb-4 items-center">
         <input
           type="text"
           placeholder="Пошук за назвою, FQDN, IP..."
@@ -297,6 +347,18 @@ export default function Resources() {
             <option key={o} value={o}>{o}</option>
           ))}
         </select>
+        <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={groupByCluster}
+            onChange={(e) => setGroupByCluster(e.target.checked)}
+            className="w-4 h-4 accent-blue-600"
+          />
+          Групувати по кластеру
+        </label>
+        {filteredItems.length !== (data?.total ?? 0) && (
+          <span className="text-xs text-gray-400">Показано: {filteredItems.length}</span>
+        )}
       </div>
 
       {isLoading && <p className="text-gray-400 animate-pulse">Завантаження...</p>}
@@ -304,7 +366,7 @@ export default function Resources() {
 
       {!isLoading && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-280px)]">
+          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase sticky top-0 z-10">
               <tr>
@@ -367,7 +429,7 @@ export default function Resources() {
                   </th>
                 )}
                 {showCol("cpu_pik") && (
-                  <th className="px-2 py-3 text-left w-36">
+                  <th className="px-2 py-3 text-left w-44">
                     <div className="flex items-center">
                       CPU % (пік)
                       <NumberRangeFilterDropdown
@@ -378,7 +440,7 @@ export default function Resources() {
                   </th>
                 )}
                 {showCol("ram_pik") && (
-                  <th className="px-2 py-3 text-left w-36">
+                  <th className="px-2 py-3 text-left w-44">
                     <div className="flex items-center">
                       RAM % (пік)
                       <NumberRangeFilterDropdown
@@ -435,7 +497,7 @@ export default function Resources() {
                 {showCol("disk_io") && (
                   <th className="px-2 py-3 text-left w-36">
                     <div className="flex items-center">
-                      Disk I/O (сер. / пік)
+                      Disk I/O (сер./пік)
                       <NumberRangeFilterDropdown
                         value={numericFilters.max_disk_io_kbps ?? null}
                         onChange={(v) => setNumericFilter("max_disk_io_kbps", v)}
@@ -443,6 +505,21 @@ export default function Resources() {
                       />
                     </div>
                   </th>
+                )}
+                {showCol("availability") && (
+                  <th className="px-3 py-3 text-left">
+                    <div className="flex items-center">
+                      Доступн.
+                      <NumberRangeFilterDropdown
+                        value={numericFilters.availability_pct ?? null}
+                        onChange={(v) => setNumericFilter("availability_pct", v)}
+                        unit="%"
+                      />
+                    </div>
+                  </th>
+                )}
+                {showCol("rightsizing") && (
+                  <th className="px-3 py-3 text-left whitespace-nowrap">Right-sizing</th>
                 )}
                 {showCol("status") && (
                   <th className="px-4 py-3 text-left">
@@ -462,105 +539,148 @@ export default function Resources() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {pageItems.map((item) => (
-                <tr key={item.name} className="hover:bg-gray-50">
-                  <td className="px-4 py-2.5 font-medium">
-                    <button
-                      onClick={() => setSelectedVm(item.name)}
-                      className="text-blue-600 hover:underline text-left"
-                      title="Історія метрик"
-                    >
-                      {item.name}
-                    </button>
-                  </td>
-                  {showCol("cluster") && (
-                    <td className="px-4 py-2.5 text-gray-500">{item.cluster ?? "—"}</td>
-                  )}
-                  {showCol("os_family") && (
-                    <td className="px-4 py-2.5 text-gray-500">{item.os_family ?? "—"}</td>
-                  )}
-                  {showCol("vcpu") && (
-                    <td className="px-4 py-2.5 text-center">{item.vcpu ?? "—"}</td>
-                  )}
-                  {showCol("vram_gb") && (
-                    <td className="px-4 py-2.5 text-center">
-                      {item.vram_gb != null ? `${item.vram_gb} GB` : "—"}
+              {pageRows.map((row, idx) => {
+                if (row.type === "header") {
+                  const colSpan = visibleCols.size + 1;
+                  return (
+                    <tr key={`h-${row.cluster}`} className="bg-blue-50">
+                      <td colSpan={colSpan} className="px-4 py-2 text-xs font-semibold text-blue-700 uppercase tracking-wide">
+                        {row.cluster} <span className="text-blue-400 font-normal ml-1">({row.count} ВМ)</span>
+                      </td>
+                    </tr>
+                  );
+                }
+
+                const item = row.item;
+                return (
+                  <tr key={item.name + idx} className="hover:bg-gray-50">
+                    <td className="px-4 py-2.5 font-medium">
+                      <button
+                        onClick={() => setSelectedVm(item.name)}
+                        className="text-blue-600 hover:underline text-left"
+                        title="Історія метрик"
+                      >
+                        {item.name}
+                      </button>
                     </td>
-                  )}
-                  {showCol("cpu_pik") && (
-                    <td className="px-2 py-2.5">
-                      <ResourceBar pct={item.avg_cpu_pct} peakPct={item.max_cpu_pct} />
-                    </td>
-                  )}
-                  {showCol("ram_pik") && (
-                    <td className="px-2 py-2.5">
-                      <ResourceBar pct={item.avg_ram_pct} peakPct={item.max_ram_pct} />
-                    </td>
-                  )}
-                  {showCol("disk_zbx") && (
-                    <td className="px-2 py-2.5">
-                      <ResourceBar
-                        pct={item.avg_disk_free_pct != null ? 100 - item.avg_disk_free_pct : null}
-                        peakPct={item.min_disk_free_pct != null ? 100 - item.min_disk_free_pct : null}
-                      />
-                    </td>
-                  )}
-                  {showCol("cpu_vc") && (
-                    <td className="px-2 py-2.5">
-                      <ResourceBar pct={item.vc_avg_cpu_pct} peakPct={item.vc_max_cpu_pct} />
-                    </td>
-                  )}
-                  {showCol("ram_vc") && (
-                    <td className="px-2 py-2.5">
-                      <ResourceBar pct={item.vc_avg_ram_pct} peakPct={item.vc_max_ram_pct} />
-                    </td>
-                  )}
-                  {showCol("disk_pct") && (
-                    <td className="px-2 py-2.5">
-                      <ResourceBar pct={item.avg_disk_used_pct} peakPct={item.max_disk_used_pct} />
-                    </td>
-                  )}
-                  {showCol("disk_io") && (
-                    <td className="px-2 py-2.5 text-xs text-gray-600 whitespace-nowrap">
-                      {item.avg_disk_io_kbps != null
-                        ? `${(item.avg_disk_io_kbps / 1024).toFixed(1)} / ${(item.max_disk_io_kbps! / 1024).toFixed(1)} МБ/с`
-                        : "—"}
-                    </td>
-                  )}
-                  {showCol("status") && (
-                    <td className="px-4 py-2.5">
-                      <StatusBadge
-                        label={statusLabel[item.resource_status]}
-                        variant={statusVariant(item.resource_status)}
-                      />
-                    </td>
-                  )}
-                  {showCol("recommendations") && (
-                    <td className="px-4 py-2.5 text-gray-600 max-w-xl">
-                      {item.recommendations.length > 0 ? (
-                        <ul className="space-y-0.5">
-                          {item.recommendations.map((r, i) => (
-                            <li key={i} className="text-xs">{r}</li>
-                          ))}
-                        </ul>
-                      ) : "—"}
-                    </td>
-                  )}
-                </tr>
-              ))}
+                    {showCol("cluster") && (
+                      <td className="px-4 py-2.5 text-gray-500">{item.cluster ?? "—"}</td>
+                    )}
+                    {showCol("os_family") && (
+                      <td className="px-4 py-2.5 text-gray-500">{item.os_family ?? "—"}</td>
+                    )}
+                    {showCol("vcpu") && (
+                      <td className="px-4 py-2.5 text-center">{item.vcpu ?? "—"}</td>
+                    )}
+                    {showCol("vram_gb") && (
+                      <td className="px-4 py-2.5 text-center">
+                        {item.vram_gb != null ? `${item.vram_gb} GB` : "—"}
+                      </td>
+                    )}
+                    {showCol("cpu_pik") && (
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1">
+                          <ResourceBar pct={item.avg_cpu_pct} peakPct={item.max_cpu_pct} />
+                          <TrendBadge delta={item.trend_cpu_delta} />
+                        </div>
+                      </td>
+                    )}
+                    {showCol("ram_pik") && (
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1">
+                          <ResourceBar pct={item.avg_ram_pct} peakPct={item.max_ram_pct} />
+                          <TrendBadge delta={item.trend_ram_delta} />
+                        </div>
+                      </td>
+                    )}
+                    {showCol("disk_zbx") && (
+                      <td className="px-2 py-2.5">
+                        <ResourceBar
+                          pct={item.avg_disk_free_pct != null ? 100 - item.avg_disk_free_pct : null}
+                          peakPct={item.min_disk_free_pct != null ? 100 - item.min_disk_free_pct : null}
+                        />
+                      </td>
+                    )}
+                    {showCol("cpu_vc") && (
+                      <td className="px-2 py-2.5">
+                        <ResourceBar pct={item.vc_avg_cpu_pct} peakPct={item.vc_max_cpu_pct} />
+                      </td>
+                    )}
+                    {showCol("ram_vc") && (
+                      <td className="px-2 py-2.5">
+                        <ResourceBar pct={item.vc_avg_ram_pct} peakPct={item.vc_max_ram_pct} />
+                      </td>
+                    )}
+                    {showCol("disk_pct") && (
+                      <td className="px-2 py-2.5">
+                        <ResourceBar pct={item.avg_disk_used_pct} peakPct={item.max_disk_used_pct} />
+                      </td>
+                    )}
+                    {showCol("disk_io") && (
+                      <td className="px-2 py-2.5 text-xs text-gray-600 whitespace-nowrap">
+                        {item.avg_disk_io_kbps != null
+                          ? `${(item.avg_disk_io_kbps / 1024).toFixed(1)} / ${(item.max_disk_io_kbps! / 1024).toFixed(1)} МБ/с`
+                          : "—"}
+                      </td>
+                    )}
+                    {showCol("availability") && (
+                      <td className="px-3 py-2.5 text-center">
+                        <AvailBadge pct={item.availability_pct} />
+                      </td>
+                    )}
+                    {showCol("rightsizing") && (
+                      <td className="px-3 py-2.5 text-xs text-gray-600 whitespace-nowrap">
+                        {(item.recommended_vcpu != null || item.recommended_vram_gb != null) ? (
+                          <span className="inline-flex gap-2">
+                            {item.recommended_vcpu != null && item.vcpu != null && (
+                              <span className={item.recommended_vcpu < item.vcpu ? "text-blue-600" : "text-orange-600"}>
+                                CPU: {item.vcpu}→{item.recommended_vcpu}
+                              </span>
+                            )}
+                            {item.recommended_vram_gb != null && item.vram_gb != null && (
+                              <span className={item.recommended_vram_gb < item.vram_gb ? "text-blue-600" : "text-orange-600"}>
+                                RAM: {item.vram_gb}→{item.recommended_vram_gb} GB
+                              </span>
+                            )}
+                          </span>
+                        ) : "—"}
+                      </td>
+                    )}
+                    {showCol("status") && (
+                      <td className="px-4 py-2.5">
+                        <StatusBadge
+                          label={statusLabel[item.resource_status]}
+                          variant={statusVariant(item.resource_status)}
+                        />
+                      </td>
+                    )}
+                    {showCol("recommendations") && (
+                      <td className="px-4 py-2.5 text-gray-600 max-w-xl">
+                        {item.recommendations.length > 0 ? (
+                          <ul className="space-y-0.5">
+                            {item.recommendations.map((r, i) => (
+                              <li key={i} className="text-xs">{r}</li>
+                            ))}
+                          </ul>
+                        ) : "—"}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           </div>
-          {items.length === 0 && (
+          {filteredItems.length === 0 && (
             <p className="text-center py-8 text-gray-400 text-sm">Нічого не знайдено</p>
           )}
         </div>
       )}
 
-      {!isLoading && items.length > 0 && (
+      {!isLoading && !groupByCluster && filteredItems.length > 0 && (
         <>
           <p className="text-center text-xs text-gray-400 mt-3">
-            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, items.length)} з {items.length}
+            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filteredItems.length)} з {filteredItems.length}
           </p>
           <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
         </>

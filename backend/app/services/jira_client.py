@@ -130,15 +130,17 @@ async def get_all_vms() -> list[dict]:
     for obj in raw:
         name = obj.get("label") or obj.get("name", "")
         result.append({
-            "name": name,
-            "fqdn": _attr_value(obj, attr_map, "FQDN"),
-            "cname": _attr_value(obj, attr_map, "CNAME"),
-            "primary_ip": _attr_value(obj, attr_map, "Primary IP"),
-            "status": _attr_ref(obj, attr_map, "Status"),
-            "os_family": _attr_ref(obj, attr_map, "OS"),
-            "cluster": _attr_ref(obj, attr_map, "Cluster"),
-            "vcpu": _int(_attr_value(obj, attr_map, "vCPU Count")),
-            "vram_gb": _int(_attr_value(obj, attr_map, "vRAM GB")),
+            "jira_id":      str(obj.get("id", "")),
+            "jira_updated": obj.get("updated"),   # ISO datetime from Jira
+            "name":         name,
+            "fqdn":         _attr_value(obj, attr_map, "FQDN"),
+            "cname":        _attr_value(obj, attr_map, "CNAME"),
+            "primary_ip":   _attr_value(obj, attr_map, "Primary IP"),
+            "status":       _attr_ref(obj, attr_map, "Status"),
+            "os_family":    _attr_ref(obj, attr_map, "OS"),
+            "cluster":      _attr_ref(obj, attr_map, "Cluster"),
+            "vcpu":         _int(_attr_value(obj, attr_map, "vCPU Count")),
+            "vram_gb":      _int(_attr_value(obj, attr_map, "vRAM GB")),
         })
     return result
 
@@ -153,6 +155,8 @@ async def get_all_physical_servers() -> list[dict]:
     for obj in raw:
         name = obj.get("label") or obj.get("name", "")
         result.append({
+            "jira_id":        str(obj.get("id", "")),
+            "jira_updated":   obj.get("updated"),
             "name":           name,
             "fqdn":           _attr_value(obj, attr_map, "FQDN"),
             "cname":          _attr_value(obj, attr_map, "CNAME"),
@@ -177,8 +181,10 @@ async def get_all_clusters() -> list[dict]:
     result = []
     for obj in raw:
         result.append({
-            "name": obj.get("label") or obj.get("name", ""),
-            "host_count": _int(_attr_value(obj, attr_map, "Host Count")),
+            "jira_id":         str(obj.get("id", "")),
+            "jira_updated":    obj.get("updated"),
+            "name":            obj.get("label") or obj.get("name", ""),
+            "host_count":      _int(_attr_value(obj, attr_map, "Host Count")),
             "total_cpu_cores": _int(_attr_value(obj, attr_map, "Total CPU Cores")),
         })
     return result

@@ -7,6 +7,10 @@ import Resources from "./pages/Resources";
 import PhysicalServers from "./pages/PhysicalServers";
 import Clusters from "./pages/Clusters";
 import Problems from "./pages/Problems";
+import VCenter from "./pages/VCenter";
+import ZabbixProblems from "./pages/ZabbixProblems";
+import OsReport from "./pages/OsReport";
+import CmdbStats from "./pages/CmdbStats";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,6 +33,10 @@ export default function App() {
             <Route path="physical-servers" element={<PhysicalServers />} />
             <Route path="clusters" element={<Clusters />} />
             <Route path="problems" element={<Problems />} />
+            <Route path="vcenter" element={<VCenter />} />
+            <Route path="zabbix-problems" element={<ZabbixProblems />} />
+            <Route path="os-report" element={<OsReport />} />
+            <Route path="cmdb-stats" element={<CmdbStats />} />
           </Route>
         </Routes>
       </BrowserRouter>

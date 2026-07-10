@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 ITEM_CPU_UTIL = "system.cpu.util"
 ITEM_MEM_USED = "vm.memory.size[used]"
 ITEM_MEM_TOTAL = "vm.memory.size[total]"
+ITEM_MEM_UTILIZATION = "vm.memory.utilization"  # direct % — fallback when used/total absent
 # Canonical key used in metric_hourly for any vfs.fs.size[*,pfree] item
 ITEM_DISK_FREE_PCT = "vfs.fs.size[/,pfree]"
 
@@ -27,7 +28,7 @@ ITEM_VMWARE_CPU_PCT = "vmware.hv.cpu.usage.perf"
 ITEM_VMWARE_MEM_USED = "vmware.hv.memory.used"
 ITEM_VMWARE_MEM_TOTAL = "vmware.hv.hw.memory"
 
-_CORE_ITEM_KEYS = [ITEM_CPU_UTIL, ITEM_MEM_USED, ITEM_MEM_TOTAL]
+_CORE_ITEM_KEYS = [ITEM_CPU_UTIL, ITEM_MEM_USED, ITEM_MEM_TOTAL, ITEM_MEM_UTILIZATION]
 # Search substring that matches all filesystem free-% items across Linux/Windows
 _DISK_FREE_SEARCH = "pfree"
 # VMware HV item key prefixes (parameterized in Zabbix, normalized on store)
@@ -208,6 +209,81 @@ class ZabbixClient:
         return series
 
 
+    async def get_problems(self) -> list[dict]:
+        """Return all active Zabbix problems (triggers in PROBLEM state) with host info.
+
+        Uses trigger.get because this Zabbix version doesn't support
+        selectHosts on problem.get.
+        """
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+            await self._ensure_auth(client)
+            triggers = await self._call(client, "trigger.get", {
+                "output": ["triggerid", "description", "priority", "lastchange",
+                           "value", "suppressed"],
+                "filter": {"value": "1"},  # 1 = PROBLEM state
+                "selectHosts": ["hostid", "name", "host"],
+                "selectTags": ["tag", "value"],
+                "selectLastEvent": ["eventid", "acknowledged"],
+                "monitored": True,
+                "skipDependent": True,
+                "active": True,
+                "expandDescription": True,
+                "sortfield": ["priority", "lastchange"],
+                "sortorder": "DESC",
+            })
+        return triggers or []
+
+    async def get_problems_history(self, time_from: int, time_till: int) -> list[dict]:
+        """Return problem events in a time window, merged with trigger/host info.
+
+        Two-step: event.get (supports time_from/time_till) → trigger.get with
+        the collected triggerids (supports selectHosts).
+        """
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+            await self._ensure_auth(client)
+            events = await self._call(client, "event.get", {
+                "output": ["eventid", "objectid", "clock", "acknowledged",
+                           "suppressed", "tags"],
+                "source": 0,   # trigger events
+                "object": 0,   # triggers
+                "value": 1,    # PROBLEM start events
+                "time_from": time_from,
+                "time_till": time_till,
+                "selectTags": ["tag", "value"],
+                "sortfield": "clock",
+                "sortorder": "DESC",
+                "limit": 10000,
+            })
+            if not events:
+                return []
+
+            triggerids = list({e["objectid"] for e in events})
+            triggers = await self._call(client, "trigger.get", {
+                "output": ["triggerid", "description", "priority"],
+                "triggerids": triggerids,
+                "selectHosts": ["hostid", "name", "host"],
+                "expandDescription": True,
+            })
+        trigger_map = {t["triggerid"]: t for t in (triggers or [])}
+
+        result = []
+        for e in events:
+            trigger = trigger_map.get(e["objectid"])
+            if not trigger:
+                continue
+            result.append({
+                "triggerid": e["eventid"],
+                "description": trigger.get("description", ""),
+                "priority": trigger.get("priority", 0),
+                "lastchange": e["clock"],
+                "suppressed": e.get("suppressed", "0"),
+                "hosts": trigger.get("hosts", []),
+                "tags": e.get("tags", []),
+                "lastEvent": {"acknowledged": e.get("acknowledged", "0")},
+            })
+        return result
+
+
 _client = ZabbixClient()
 
 
@@ -223,3 +299,11 @@ async def get_recent_history(
     itemids_by_type: dict[str, list[str]], time_from: int, time_till: int
 ) -> dict[str, list[tuple[int, float]]]:
     return await _client.get_recent_history(itemids_by_type, time_from, time_till)
+
+
+async def get_problems() -> list[dict]:
+    return await _client.get_problems()
+
+
+async def get_problems_history(time_from: int, time_till: int) -> list[dict]:
+    return await _client.get_problems_history(time_from, time_till)

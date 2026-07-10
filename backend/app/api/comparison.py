@@ -17,6 +17,8 @@ async def get_comparison():
 
     vms, _ = vms_cached
     zabbix_hosts, updated_at = hosts_cached
-    response = analyzer.build_comparison(vms, zabbix_hosts)
+    phys_cached = db.get("physical_servers")
+    physical_servers = phys_cached[0] if phys_cached else []
+    response = analyzer.build_comparison(vms, zabbix_hosts, physical_servers)
     response.synced_at = updated_at
     return response

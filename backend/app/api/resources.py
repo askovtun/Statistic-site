@@ -26,10 +26,10 @@ async def get_resources(
     moid_map_cached = db.get("vm_moid_map")
     vm_moid_map = moid_map_cached[0] if moid_map_cached else {}
 
+    matched_vms = [vm for vm in vms if vm.get("name") in vm_hostid_map]
     metrics = {
         vm["name"]: metrics_store.get_period_metrics(vm_hostid_map[vm["name"]], period_days)
-        for vm in vms
-        if vm.get("name") in vm_hostid_map
+        for vm in matched_vms
     }
     vc_metrics = {
         vm["name"]: metrics_store.get_vcenter_period_metrics(vm_moid_map[vm["name"]], period_days)
@@ -37,7 +37,14 @@ async def get_resources(
         if vm.get("name") in vm_moid_map
     }
 
-    response = analyzer.build_resources(vms, metrics, vc_metrics)
+    # Trend analysis: this period vs previous period (batch, one SQL per period)
+    hostid_by_name = {vm["name"]: vm_hostid_map[vm["name"]] for vm in matched_vms}
+    trend_by_hostid = metrics_store.get_trends_and_availability_batch(
+        list(hostid_by_name.values()), period_days
+    )
+    trend_data = {name: trend_by_hostid[hid] for name, hid in hostid_by_name.items() if hid in trend_by_hostid}
+
+    response = analyzer.build_resources(vms, metrics, vc_metrics, trend_data)
     response.synced_at = updated_at
     return response
 
@@ -61,8 +68,17 @@ async def get_resource_history(
 
     hostid = vm_hostid_map.get(name)
     moid = vm_moid_map.get(name)
+
     if hostid is None and moid is None:
-        raise HTTPException(status_code=404, detail="ВМ не знайдена або немає метрик Zabbix/vCenter")
+        # Перевіряємо чи VM взагалі існує в CMDB
+        vms_cached = db.get("vms")
+        if vms_cached is None:
+            raise HTTPException(status_code=503, detail=_NOT_SYNCED)
+        vms, _ = vms_cached
+        if not any(vm.get("name") == name for vm in vms):
+            raise HTTPException(status_code=404, detail="ВМ не знайдена в CMDB")
+        # VM існує, але не зматчена з Zabbix/vCenter — повертаємо порожні масиви
+        return ResourceHistoryResponse(name=name, points=[], vcenter_points=[])
 
     points = metrics_store.get_history(hostid, period_days) if hostid else []
     vcenter_points = metrics_store.get_vcenter_history(moid, period_days) if moid else []

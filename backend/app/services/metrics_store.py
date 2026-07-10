@@ -13,9 +13,12 @@ from app.services import db
 from app.services.vcenter_client import (
     _EMPTY_VCENTER_METRICS,
     ITEM_VC_CPU,
+    ITEM_VC_CPU_READY,
     ITEM_VC_DISK_IO,
     ITEM_VC_DISK_SPACE,
     ITEM_VC_MEM,
+    ITEM_VC_MEM_BALLOON,
+    ITEM_VC_MEM_SWAPPED,
 )
 from app.services.zabbix_client import (
     _EMPTY_METRICS,
@@ -23,6 +26,7 @@ from app.services.zabbix_client import (
     ITEM_DISK_FREE_PCT,
     ITEM_MEM_TOTAL,
     ITEM_MEM_USED,
+    ITEM_MEM_UTILIZATION,
     ITEM_VMWARE_CPU_PCT,
     ITEM_VMWARE_MEM_TOTAL,
     ITEM_VMWARE_MEM_USED,
@@ -106,7 +110,97 @@ def get_period_metrics(hostid: str, period_days: int) -> dict[str, float | None]
             m["ram_pct"] = vmware_used["avg"] / vmware_total["avg"] * 100
             m["ram_pct_max"] = vmware_used["max"] / vmware_total["avg"] * 100
 
+    # Fallback: vm.memory.utilization — direct % item (used instead of used/total pair
+    # on some hosts, e.g. FreeBSD/custom templates that lack vm.memory.size[used])
+    if m["ram_pct"] is None and ITEM_MEM_UTILIZATION in vals:
+        m["ram_pct"] = vals[ITEM_MEM_UTILIZATION]["avg"]
+        m["ram_pct_max"] = vals[ITEM_MEM_UTILIZATION]["max"]
+
     return m
+
+
+def get_trends_and_availability_batch(
+    hostids: list[str], period_days: int
+) -> dict[str, dict]:
+    """Batch trend + availability for all matched hosts.
+
+    Returns {hostid: {trend_cpu_delta, trend_ram_delta, availability_pct}}.
+    Availability = fraction of expected hourly buckets that actually have CPU data.
+    Trend = current-period weighted-avg minus previous-period weighted-avg.
+    """
+    if not hostids:
+        return {}
+
+    now = int(time.time())
+    curr_from = now - period_days * 86400
+    prev_from = now - period_days * 2 * 86400
+    placeholders = ",".join("?" * len(hostids))
+
+    with db._connect() as conn:
+        curr_rows = conn.execute(
+            f"SELECT hostid, metric, SUM(avg*num)/SUM(num), COUNT(*) "
+            f"FROM metric_hourly WHERE source='zabbix' AND hostid IN ({placeholders}) "
+            f"AND hour_clock>=? AND num>0 GROUP BY hostid, metric",
+            [*hostids, curr_from],
+        ).fetchall()
+        prev_rows = conn.execute(
+            f"SELECT hostid, metric, SUM(avg*num)/SUM(num) "
+            f"FROM metric_hourly WHERE source='zabbix' AND hostid IN ({placeholders}) "
+            f"AND hour_clock>=? AND hour_clock<? AND num>0 GROUP BY hostid, metric",
+            [*hostids, prev_from, curr_from],
+        ).fetchall()
+
+    # curr: {hostid: {metric: {"avg": float, "count": int}}}
+    curr: dict[str, dict[str, dict]] = {}
+    for hostid, metric, w_avg, cnt in curr_rows:
+        curr.setdefault(hostid, {})[metric] = {"avg": w_avg, "count": cnt}
+
+    # prev: {hostid: {metric: float}}
+    prev: dict[str, dict[str, float]] = {}
+    for hostid, metric, w_avg in prev_rows:
+        prev.setdefault(hostid, {})[metric] = w_avg
+
+    def _ram_pct(vals: dict[str, dict]) -> float | None:
+        used = vals.get(ITEM_MEM_USED)
+        total = vals.get(ITEM_MEM_TOTAL)
+        if used and total and total.get("avg"):
+            return used["avg"] / total["avg"] * 100
+        util = vals.get(ITEM_MEM_UTILIZATION)
+        return util["avg"] if util else None
+
+    def _ram_pct_prev(vals: dict[str, float]) -> float | None:
+        used = vals.get(ITEM_MEM_USED)
+        total = vals.get(ITEM_MEM_TOTAL)
+        if used is not None and total:
+            return used / total * 100
+        return vals.get(ITEM_MEM_UTILIZATION)
+
+    result: dict[str, dict] = {}
+    expected_buckets = period_days * 24
+
+    for hostid in hostids:
+        c = curr.get(hostid, {})
+        p = prev.get(hostid, {})
+
+        cpu_info = c.get(ITEM_CPU_UTIL)
+        cpu_count = cpu_info["count"] if cpu_info else 0
+        avail = round(min(100.0, cpu_count / expected_buckets * 100), 1) if cpu_count else None
+
+        curr_cpu = (cpu_info or {}).get("avg")
+        prev_cpu = p.get(ITEM_CPU_UTIL)
+        trend_cpu = round(curr_cpu - prev_cpu, 1) if curr_cpu is not None and prev_cpu is not None else None
+
+        curr_ram = _ram_pct(c)
+        prev_ram = _ram_pct_prev(p)
+        trend_ram = round(curr_ram - prev_ram, 1) if curr_ram is not None and prev_ram is not None else None
+
+        result[hostid] = {
+            "trend_cpu_delta": trend_cpu,
+            "trend_ram_delta": trend_ram,
+            "availability_pct": avail,
+        }
+
+    return result
 
 
 def get_vcenter_period_metrics(moid: str, period_days: int) -> dict[str, float | None]:
@@ -130,6 +224,18 @@ def get_vcenter_period_metrics(moid: str, period_days: int) -> dict[str, float |
     if ITEM_VC_DISK_SPACE in vals:
         m["disk_used_pct"] = vals[ITEM_VC_DISK_SPACE]["avg"]
         m["disk_used_pct_max"] = vals[ITEM_VC_DISK_SPACE]["max"]
+
+    # cpu.ready: daily summation in ms → %
+    # Formula: sum_ms_per_day / (4320 samples × 20000ms) × 100 = sum_ms / 864000
+    if ITEM_VC_CPU_READY in vals:
+        raw = vals[ITEM_VC_CPU_READY]["avg"]
+        m["cpu_ready_pct"] = raw / 864000.0 if raw is not None else None
+
+    if ITEM_VC_MEM_BALLOON in vals:
+        m["mem_balloon_kb"] = vals[ITEM_VC_MEM_BALLOON]["avg"]
+
+    if ITEM_VC_MEM_SWAPPED in vals:
+        m["mem_swapped_kb"] = vals[ITEM_VC_MEM_SWAPPED]["avg"]
 
     return m
 
@@ -173,6 +279,8 @@ def get_history(hostid: str, period_days: int) -> list[dict[str, float | int | N
             vmware_total = m.get(ITEM_VMWARE_MEM_TOTAL)
             if vmware_used and vmware_total and vmware_total["avg"]:
                 ram_pct = vmware_used["avg"] / vmware_total["avg"] * 100
+        if ram_pct is None and ITEM_MEM_UTILIZATION in m:
+            ram_pct = m[ITEM_MEM_UTILIZATION]["avg"]
 
         points.append({
             "timestamp": hour_clock,
@@ -203,6 +311,63 @@ def get_vcenter_history(moid: str, period_days: int) -> list[dict[str, float | i
             "disk_io_kbps": disk_io["avg"] if disk_io else None,
         })
     return points
+
+
+def get_vm_cpu_ready_by_host(
+    vm_moid_map: dict[str, str],
+    vm_host_map: dict[str, str],
+    period_days: int,
+) -> dict[str, dict]:
+    """Aggregate VM CPU Ready % per ESXi host (single SQL query).
+
+    Returns {host_moid: {vm_count, vms_with_data, avg_cpu_ready_pct, max_cpu_ready_pct}}.
+    """
+    # vm_name → vm_moid, vm_name → host_moid
+    moid_to_host: dict[str, str] = {}
+    for vm_name, vm_moid in vm_moid_map.items():
+        host_moid = vm_host_map.get(vm_name)
+        if host_moid:
+            moid_to_host[vm_moid] = host_moid
+
+    host_vm_count: dict[str, int] = {}
+    for host_moid in moid_to_host.values():
+        host_vm_count[host_moid] = host_vm_count.get(host_moid, 0) + 1
+
+    if not moid_to_host:
+        return {}
+
+    cutoff = int(time.time()) - period_days * 86400
+    moids = list(moid_to_host.keys())
+    placeholders = ",".join("?" * len(moids))
+    with db._connect() as conn:
+        rows = conn.execute(
+            f"SELECT hostid, SUM(avg * num) / SUM(num) AS w_avg "
+            f"FROM metric_hourly "
+            f"WHERE source = 'vcenter' AND metric = ? AND hostid IN ({placeholders}) "
+            f"AND hour_clock >= ? AND num > 0 GROUP BY hostid",
+            [ITEM_VC_CPU_READY, *moids, cutoff],
+        ).fetchall()
+
+    # /864000 converts daily summation ms → %
+    vm_ready: dict[str, float] = {r[0]: r[1] / 864000.0 for r in rows}
+
+    host_ready: dict[str, list[float]] = {}
+    for vm_moid, host_moid in moid_to_host.items():
+        pct = vm_ready.get(vm_moid)
+        if pct is not None:
+            host_ready.setdefault(host_moid, []).append(pct)
+
+    result: dict[str, dict] = {}
+    all_host_moids = set(moid_to_host.values())
+    for host_moid in all_host_moids:
+        pcts = host_ready.get(host_moid, [])
+        result[host_moid] = {
+            "vm_count": host_vm_count.get(host_moid, 0),
+            "vms_with_data": len(pcts),
+            "avg_cpu_ready_pct": round(sum(pcts) / len(pcts), 2) if pcts else None,
+            "max_cpu_ready_pct": round(max(pcts), 2) if pcts else None,
+        }
+    return result
 
 
 def get_cluster_daily_trend(moids: list[str], period_days: int) -> list[dict]:

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import clusters, comparison, physical_servers, resources, sync
+from app.api import clusters, cmdb_stats, comparison, os_report, physical_servers, resources, sync, vcenter, zabbix_problems
 from app.config import settings
 from app.services import sync_service
 
@@ -50,6 +50,10 @@ app.include_router(resources.router, prefix="/api")
 app.include_router(clusters.router, prefix="/api")
 app.include_router(physical_servers.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
+app.include_router(vcenter.router, prefix="/api")
+app.include_router(zabbix_problems.router, prefix="/api")
+app.include_router(os_report.router, prefix="/api")
+app.include_router(cmdb_stats.router, prefix="/api")
 
 
 @app.get("/api/health", tags=["health"])

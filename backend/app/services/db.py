@@ -45,6 +45,28 @@ def _connect() -> sqlite3.Connection:
     else:
         conn.execute(_metric_hourly_ddl)
 
+    # CMDB change tracking: daily aggregated stats per CI type
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cmdb_daily_stats ("
+        "date TEXT NOT NULL, "
+        "ci_type TEXT NOT NULL, "
+        "added INTEGER NOT NULL DEFAULT 0, "
+        "updated INTEGER NOT NULL DEFAULT 0, "
+        "removed INTEGER NOT NULL DEFAULT 0, "
+        "total INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (date, ci_type))"
+    )
+
+    # CMDB snapshot: last-known state per CI (used to compute diffs)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cmdb_ci_snapshot ("
+        "ci_type TEXT NOT NULL, "
+        "ci_id TEXT NOT NULL, "
+        "ci_name TEXT NOT NULL, "
+        "jira_updated TEXT, "
+        "PRIMARY KEY (ci_type, ci_id))"
+    )
+
     return conn
 
 

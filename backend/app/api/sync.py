@@ -12,7 +12,7 @@ async def trigger_sync():
     """Kick off a background refresh of CMDB/Zabbix data into the local cache."""
     if sync_service.is_in_progress():
         return {"status": "already_running"}
-    asyncio.create_task(sync_service.sync_all())
+    asyncio.create_task(sync_service.sync_all(force_metadata=True))
     return {"status": "started"}
 
 

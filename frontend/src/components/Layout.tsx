@@ -11,6 +11,10 @@ const navItems = [
   { to: "/physical-servers", label: "Фіз. сервери", icon: "🗄️" },
   { to: "/clusters", label: "Кластери", icon: "🖥️" },
   { to: "/problems", label: "Проблеми", icon: "⚠️" },
+  { to: "/vcenter", label: "vCenter Health", icon: "🏥" },
+  { to: "/zabbix-problems", label: "Zabbix Проблеми", icon: "🚨" },
+  { to: "/os-report",      label: "Операційні ОС",  icon: "🖥" },
+  { to: "/cmdb-stats",     label: "Зміни CMDB",     icon: "📋" },
 ];
 
 function formatSyncedAt(iso: string | null | undefined): string {

@@ -17,6 +17,7 @@ ComparisonStatus = Literal["both", "cmdb_only", "zabbix_only"]
 
 class ComparisonItem(BaseModel):
     name: str
+    ci_type: Literal["vm", "physical"] = "vm"
     fqdn: str | None = None
     zabbix_name: str | None = None
     cmdb_status: str | None = None
@@ -32,6 +33,10 @@ class ComparisonResponse(BaseModel):
     monitored: int
     cmdb_only: int
     zabbix_only: int
+    # VM-only counters (excludes physical servers and zabbix_only)
+    total_vms: int = 0
+    vm_monitored: int = 0
+    vm_cmdb_only: int = 0
     items: list[ComparisonItem]
     synced_at: str | None = None
 
@@ -65,6 +70,11 @@ class ResourceItem(BaseModel):
     max_disk_io_kbps: float | None = None
     resource_status: ResourceStatus
     recommendations: list[str]
+    trend_cpu_delta: float | None = None
+    trend_ram_delta: float | None = None
+    availability_pct: float | None = None
+    recommended_vcpu: int | None = None
+    recommended_vram_gb: int | None = None
 
 
 class ResourceResponse(BaseModel):
@@ -175,3 +185,179 @@ class ClusterForecastResponse(BaseModel):
     points: list[ClusterForecastPoint]
     cpu_days_to_80: int | None = None
     ram_days_to_80: int | None = None
+
+
+# ── vCenter Health ─────────────────────────────────────────────────────────────
+
+class VCenterHealthItem(BaseModel):
+    name: str
+    moid: str
+    power_state: str
+    boot_time: str | None = None
+    cluster: str | None = None
+    vcpu: int | None = None
+    vram_gb: int | None = None
+    cpu_ready_pct: float | None = None
+    mem_balloon_kb: float | None = None
+    mem_swapped_kb: float | None = None
+    disk_used_pct: float | None = None
+    snapshot_count: int = 0
+    recommendations: list[str] = []
+
+
+class VCenterSnapshotItem(BaseModel):
+    vm_name: str
+    name: str
+    description: str = ""
+    created_at: str
+    age_days: int
+
+
+class VCenterHealthResponse(BaseModel):
+    total_vms: int
+    powered_on: int
+    powered_off: int
+    with_cpu_ready_warn: int
+    with_balloon: int
+    with_swap: int
+    with_snapshots: int
+    items: list[VCenterHealthItem]
+    synced_at: str | None = None
+
+
+class VCenterSnapshotsResponse(BaseModel):
+    total: int
+    snapshots: list[VCenterSnapshotItem]
+
+
+class VCenterHostItem(BaseModel):
+    moid: str
+    name: str
+    cluster: str | None = None
+    num_cpu_cores: int | None = None
+    memory_gb: int | None = None
+    power_state: str = "unknown"
+    cpu_usage_pct: float | None = None
+    mem_usage_pct: float | None = None
+    vm_count: int = 0
+    vms_with_data: int = 0
+    avg_vm_cpu_ready_pct: float | None = None
+    max_vm_cpu_ready_pct: float | None = None
+    total_vcpus: int = 0
+    cpu_overcommit_ratio: float | None = None
+    status: str = "ok"
+
+
+class VCenterHostsResponse(BaseModel):
+    total_hosts: int
+    powered_on: int
+    hosts_with_ready_warn: int
+    items: list[VCenterHostItem]
+    synced_at: str | None = None
+
+
+# ── OS Lifecycle Report ────────────────────────────────────────────────────────
+
+OsStatus = Literal["supported", "ending_soon", "eol", "unknown"]
+
+
+class OsServerItem(BaseModel):
+    name: str
+    ci_type: Literal["vm", "physical"] = "vm"
+    os_raw: str | None = None       # OS name used for matching (from vCenter or CMDB)
+    os_product: str | None = None
+    os_vendor: str | None = None
+    os_status: OsStatus = "unknown"
+    eol_date: str | None = None
+    days_until_eol: int | None = None
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    os_from_tools: bool = False     # True = OS read from VMware Tools (guest), False = CMDB/config
+
+
+class OsSummaryItem(BaseModel):
+    os_raw: str
+    os_product: str | None = None
+    os_vendor: str | None = None
+    os_status: OsStatus = "unknown"
+    eol_date: str | None = None
+    days_until_eol: int | None = None
+    server_count: int = 0
+
+
+class OsReportResponse(BaseModel):
+    total_servers: int
+    supported: int
+    ending_soon: int
+    eol: int
+    unknown: int
+    os_types: list[OsSummaryItem]
+    servers: list[OsServerItem]
+    synced_at: str | None = None
+
+
+# ── CMDB Change Statistics ────────────────────────────────────────────────────
+
+class CmdbTypeStats(BaseModel):
+    ci_type: str
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+    total: int = 0
+
+
+class CmdbDayStats(BaseModel):
+    date: str
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+    total: int = 0
+    breakdown: list[CmdbTypeStats] = []
+
+
+class CmdbStatsResponse(BaseModel):
+    days: list[CmdbDayStats]
+    current_totals: dict[str, int] = {}
+    synced_at: str | None = None
+
+
+# ── Zabbix Problems ────────────────────────────────────────────────────────────
+
+class ZabbixProblemItem(BaseModel):
+    event_id: str
+    name: str
+    severity: int       # 0=Not classified … 5=Disaster
+    clock: int          # unix timestamp
+    acknowledged: bool
+    suppressed: bool
+    tags: list[dict[str, str]] = []
+
+
+class ZabbixHostProblems(BaseModel):
+    hostid: str
+    host_name: str       # Zabbix display name
+    host_technical: str  # technical hostname (host field)
+    problems: list[ZabbixProblemItem]
+    total: int
+    max_severity: int    # highest severity among all problems
+    disaster: int = 0
+    high: int = 0
+    average: int = 0
+    warning: int = 0
+    information: int = 0
+    not_classified: int = 0
+    latest_clock: int | None = None
+
+
+class ZabbixProblemsResponse(BaseModel):
+    total_problems: int
+    total_hosts: int
+    disaster: int = 0
+    high: int = 0
+    average: int = 0
+    warning: int = 0
+    information: int = 0
+    not_classified: int = 0
+    hosts: list[ZabbixHostProblems]
+    fetched_at: str

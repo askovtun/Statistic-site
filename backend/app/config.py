@@ -8,11 +8,11 @@ class Settings(BaseSettings):
     jira_url: str = "https://jira.example.com"
     jira_user: str = "admin"
     jira_password: str = ""
-    jira_schema_id: int = 41
-    jira_vm_type_id: int = 1439
-    jira_cluster_type_id: int = 1438
-    jira_os_type_id: int = 1445
-    jira_physical_server_type_id: int = 1436
+    jira_schema_id: int = 3
+    jira_vm_type_id: int = 86
+    jira_cluster_type_id: int = 85
+    jira_os_type_id: int = 92
+    jira_physical_server_type_id: int = 83
 
     # Zabbix
     zabbix_url: str = "https://zabbix.example.com"
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     dc_license_price_usd: float = 769.0  # 2-core pack
 
     # HTTP
-    ssl_verify: bool = True
+    ssl_verify: bool = False
     request_delay: float = 0.3
     request_retries: int = 3
 

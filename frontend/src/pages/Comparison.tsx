@@ -19,10 +19,16 @@ const statusVariant = (s: ComparisonItem["comparison_status"]) =>
 
 type FilterKey = "all" | ComparisonItem["comparison_status"];
 
-type ColumnKey = "name" | "fqdn" | "zabbix_name" | "cmdb_status" | "zabbix_status" | "comparison_status";
+const ciTypeLabel: Record<ComparisonItem["ci_type"], string> = {
+  vm: "VM",
+  physical: "Фіз. сервер",
+};
+
+type ColumnKey = "name" | "ci_type" | "fqdn" | "zabbix_name" | "cmdb_status" | "zabbix_status" | "comparison_status";
 
 const columnValue: Record<ColumnKey, (i: ComparisonItem) => string> = {
   name: (i) => i.name,
+  ci_type: (i) => ciTypeLabel[i.ci_type],
   fqdn: (i) => i.fqdn ?? "—",
   zabbix_name: (i) => i.zabbix_name ?? "—",
   cmdb_status: (i) => i.cmdb_status ?? "—",
@@ -135,7 +141,7 @@ export default function Comparison() {
         </div>
       </div>
       <p className="text-sm text-gray-500 mb-6">
-        Порівняння серверів з Jira CMDB та хостів у Zabbix моніторингу
+        Порівняння віртуальних і фізичних серверів з Jira CMDB та хостів у Zabbix моніторингу
       </p>
 
       {/* Summary chips */}
@@ -213,6 +219,16 @@ export default function Comparison() {
                 </th>
                 <th className="px-4 py-3 text-left">
                   <div className="flex items-center">
+                    Тип
+                    <ColumnFilterDropdown
+                      options={columnOptions.ci_type}
+                      selected={columnFilters.ci_type ?? null}
+                      onChange={(v) => setColumnFilter("ci_type", v)}
+                    />
+                  </div>
+                </th>
+                <th className="px-4 py-3 text-left">
+                  <div className="flex items-center">
                     FQDN (CMDB)
                     <ColumnFilterDropdown
                       options={columnOptions.fqdn}
@@ -267,6 +283,15 @@ export default function Comparison() {
               {pageItems.map((item) => (
                 <tr key={item.name} className="hover:bg-gray-50">
                   <td className="px-4 py-2.5 font-medium">{item.name}</td>
+                  <td className="px-4 py-2.5">
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      item.ci_type === "physical"
+                        ? "bg-orange-100 text-orange-700"
+                        : "bg-blue-100 text-blue-700"
+                    }`}>
+                      {ciTypeLabel[item.ci_type]}
+                    </span>
+                  </td>
                   <td className="px-4 py-2.5 text-gray-500">{item.fqdn ?? "—"}</td>
                   <td className="px-4 py-2.5 text-gray-500">
                     {item.zabbix_name
