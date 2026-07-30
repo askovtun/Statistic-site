@@ -67,6 +67,50 @@ def _connect() -> sqlite3.Connection:
         "PRIMARY KEY (ci_type, ci_id))"
     )
 
+    # Daily monitoring coverage snapshot (Zabbix coverage of CMDB inventory)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS monitoring_coverage_history ("
+        "date TEXT PRIMARY KEY, "
+        "vm_total INTEGER NOT NULL DEFAULT 0, "
+        "vm_monitored INTEGER NOT NULL DEFAULT 0, "
+        "phys_total INTEGER NOT NULL DEFAULT 0, "
+        "phys_monitored INTEGER NOT NULL DEFAULT 0)"
+    )
+
+    # VM configuration snapshot (last known state — compared on each metadata sync)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS vm_config_snapshot ("
+        "name TEXT PRIMARY KEY, "
+        "vcpu INTEGER, "
+        "vram_gb INTEGER, "
+        "cluster TEXT, "
+        "status TEXT, "
+        "os_family TEXT, "
+        "seen_at INTEGER NOT NULL)"
+    )
+
+    # VM configuration change log (diff between consecutive syncs)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS vm_config_changes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "name TEXT NOT NULL, "
+        "change_type TEXT NOT NULL, "
+        "old_value TEXT, "
+        "new_value TEXT, "
+        "detected_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_vm_cfg_changes_at "
+        "ON vm_config_changes(detected_at DESC)"
+    )
+
+    # Covering index for time-range batch queries: allows SQLite to filter by
+    # (source, hour_clock) first — helps the IN-list batch queries in metrics_store.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_metric_hourly_src_time "
+        "ON metric_hourly(source, hour_clock)"
+    )
+
     return conn
 
 

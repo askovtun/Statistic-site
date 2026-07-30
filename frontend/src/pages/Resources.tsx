@@ -101,7 +101,7 @@ export default function Resources() {
     queryFn: () => api.resources(days),
   });
 
-  const [filter, setFilter] = useState<ResourceItem["resource_status"] | "all">("all");
+  const [filter, setFilter] = useState<ResourceItem["resource_status"] | "all" | "needs_attention">("all");
   const [search, setSearch] = useState("");
   const [cluster, setCluster] = useState("");
   const [osFamily, setOsFamily] = useState("");
@@ -157,7 +157,8 @@ export default function Resources() {
   ).sort();
 
   const filteredItems = (data?.items ?? []).filter((i) => {
-    if (filter !== "all" && i.resource_status !== filter) return false;
+    if (filter === "needs_attention" && i.resource_status !== "oversized" && i.resource_status !== "undersized") return false;
+    if (filter !== "all" && filter !== "needs_attention" && i.resource_status !== filter) return false;
     if (cluster && i.cluster !== cluster) return false;
     if (osFamily && i.os_family !== osFamily) return false;
     if (search) {
@@ -298,20 +299,25 @@ export default function Resources() {
         <div className="flex gap-3 mb-5 flex-wrap">
           {(
             [
-              { key: "all", label: `Всі (${data.total})` },
-              { key: "optimal", label: `Оптимальні (${data.optimal})` },
-              { key: "oversized", label: `Oversized (${data.oversized})` },
-              { key: "undersized", label: `Undersized (${data.undersized})` },
-              { key: "no_data", label: `Без даних (${data.no_data})` },
-            ] as { key: typeof filter; label: string }[]
-          ).map(({ key, label }) => (
+              { key: "all",             label: `Всі (${data.total})` },
+              { key: "needs_attention", label: `Потребують уваги (${data.oversized + data.undersized})`, accent: true },
+              { key: "optimal",         label: `Оптимальні (${data.optimal})` },
+              { key: "oversized",       label: `Oversized (${data.oversized})` },
+              { key: "undersized",      label: `Undersized (${data.undersized})` },
+              { key: "no_data",         label: `Без даних (${data.no_data})` },
+            ] as { key: typeof filter; label: string; accent?: boolean }[]
+          ).map(({ key, label, accent }) => (
             <button
               key={key}
               onClick={() => setFilter(key)}
               className={`px-3 py-1.5 rounded-full text-sm font-medium border transition ` +
                 (filter === key
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-white text-gray-600 border-gray-300 hover:border-blue-400")}
+                  ? accent
+                    ? "bg-amber-500 text-white border-amber-500"
+                    : "bg-blue-600 text-white border-blue-600"
+                  : accent
+                    ? "bg-amber-50 text-amber-700 border-amber-300 hover:border-amber-500"
+                    : "bg-white text-gray-600 border-gray-300 hover:border-blue-400")}
             >
               {label}
             </button>

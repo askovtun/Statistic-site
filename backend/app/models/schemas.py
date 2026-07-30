@@ -205,12 +205,58 @@ class VCenterHealthItem(BaseModel):
     recommendations: list[str] = []
 
 
+# ── Capacity Planning ──────────────────────────────────────────────────────────
+
+class CapacityClusterItem(BaseModel):
+    name: str
+    host_count: int = 0
+    physical_cpu_cores: int | None = None
+    physical_ram_gb: int | None = None
+    # Instantaneous usage from ESXi quickStats (weighted avg across hosts)
+    host_cpu_pct: float | None = None
+    host_ram_pct: float | None = None
+    # Allocated in CMDB (configured VM resources)
+    allocated_vcpu: int = 0
+    allocated_vram_gb: int = 0
+    total_vms: int = 0
+    powered_on_vms: int = 0
+    vcpu_ratio: float | None = None
+    vram_ratio: float | None = None
+    # Historical avg/peak from vCenter metric_hourly
+    avg_cpu_pct: float | None = None
+    avg_ram_pct: float | None = None
+    peak_cpu_pct: float | None = None
+    peak_ram_pct: float | None = None
+    # Derived free capacity (at 80% ceiling)
+    free_cpu_cores: int | None = None
+    free_ram_gb: int | None = None
+    std_vms_can_fit: int | None = None
+    # Datastore storage (from ClusterComputeResource.datastore summary)
+    total_storage_gb: int | None = None
+    free_storage_gb: int | None = None
+    storage_used_pct: float | None = None
+    status: str = "unknown"
+
+
+class CapacityResponse(BaseModel):
+    total_clusters: int
+    total_physical_cpu_cores: int = 0
+    total_physical_ram_gb: int = 0
+    total_storage_gb: int = 0
+    critical_count: int = 0
+    warning_count: int = 0
+    items: list[CapacityClusterItem]
+    synced_at: str | None = None
+    period_days: int = 30
+
+
 class VCenterSnapshotItem(BaseModel):
     vm_name: str
     name: str
     description: str = ""
     created_at: str
     age_days: int
+    cluster: str | None = None
 
 
 class VCenterHealthResponse(BaseModel):
@@ -297,6 +343,49 @@ class OsReportResponse(BaseModel):
     synced_at: str | None = None
 
 
+class OsProgressItem(BaseModel):
+    os_raw: str
+    os_product: str | None = None
+    os_vendor: str | None = None
+    eol_date: str | None = None
+    current_status: OsStatus
+    current_count: int = 0
+    baseline_status: OsStatus | None = None
+    baseline_count: int | None = None
+    delta: int | None = None          # current_count - baseline_count; negative = fewer servers
+
+
+class OsUpgradedServerItem(BaseModel):
+    name: str
+    old_status: OsStatus
+    new_status: OsStatus
+    os_product: str | None = None
+    os_raw: str | None = None
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+
+
+class OsProgressResponse(BaseModel):
+    baseline_taken_at: str | None = None
+    baseline_label: str | None = None
+    baseline_total: int | None = None
+    baseline_eol: int | None = None
+    baseline_ending_soon: int | None = None
+    baseline_supported: int | None = None
+    baseline_unknown: int | None = None
+    current_total: int = 0
+    current_eol: int = 0
+    current_ending_soon: int = 0
+    current_supported: int = 0
+    current_unknown: int = 0
+    eol_delta: int | None = None           # negative = fewer EOL (good)
+    ending_soon_delta: int | None = None
+    supported_delta: int | None = None
+    items: list[OsProgressItem] = []
+    upgraded_servers: list[OsUpgradedServerItem] = []
+
+
 # ── CMDB Change Statistics ────────────────────────────────────────────────────
 
 class CmdbTypeStats(BaseModel):
@@ -319,6 +408,88 @@ class CmdbDayStats(BaseModel):
 class CmdbStatsResponse(BaseModel):
     days: list[CmdbDayStats]
     current_totals: dict[str, int] = {}
+    synced_at: str | None = None
+
+
+# ── VM Uptime Report ──────────────────────────────────────────────────────────
+
+class UptimeItem(BaseModel):
+    name: str
+    power_state: str
+    boot_time: str | None = None
+    uptime_days: int | None = None
+    cluster: str | None = None
+
+
+class UptimeResponse(BaseModel):
+    total: int
+    powered_on: int
+    powered_off: int
+    long_running: int   # uptime > 365 days
+    items: list[UptimeItem]
+    synced_at: str | None = None
+
+
+# ── Decommission Candidates ────────────────────────────────────────────────────
+
+class DecommissionedCIItem(BaseModel):
+    name: str
+    ci_type: Literal["vm", "physical"] = "vm"
+    cmdb_status: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    os_family: str | None = None
+    cluster: str | None = None     # VMs: cluster name; physical: location
+    power_state: str = "unknown"   # poweredOn / poweredOff / unknown (VMs only)
+    in_zabbix: bool = False
+    jira_updated: str | None = None
+
+
+class DecommissionedResponse(BaseModel):
+    total_vms: int = 0
+    total_physical: int = 0
+    items: list[DecommissionedCIItem] = []
+    synced_at: str | None = None
+
+
+class DecommissionItem(BaseModel):
+    name: str
+    power_state: str
+    cmdb_status: str | None = None
+    in_zabbix: bool
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    decommission_score: int     # 1..3 (how many criteria are met)
+    reasons: list[str]
+
+
+class DecommissionResponse(BaseModel):
+    total: int
+    items: list[DecommissionItem]
+    synced_at: str | None = None
+
+
+# ── Monitoring Coverage History ────────────────────────────────────────────────
+
+class CoveragePoint(BaseModel):
+    date: str
+    vm_total: int
+    vm_monitored: int
+    vm_pct: float
+    phys_total: int
+    phys_monitored: int
+    phys_pct: float
+
+
+class CoverageResponse(BaseModel):
+    current_vm_pct: float | None = None
+    current_phys_pct: float | None = None
+    vm_total: int = 0
+    vm_monitored: int = 0
+    phys_total: int = 0
+    phys_monitored: int = 0
+    history: list[CoveragePoint] = []
     synced_at: str | None = None
 
 
@@ -361,3 +532,161 @@ class ZabbixProblemsResponse(BaseModel):
     not_classified: int = 0
     hosts: list[ZabbixHostProblems]
     fetched_at: str
+
+
+# ── CMDB vs vCenter Diff ──────────────────────────────────────────────────────
+
+class CmdbVcenterDiffItem(BaseModel):
+    name: str
+    ci_type: str = "vm"
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    in_vcenter: bool = True
+    # CMDB values
+    cmdb_vcpu: int | None = None
+    cmdb_vram_gb: int | None = None
+    cmdb_cluster: str | None = None
+    cmdb_status: str | None = None
+    cmdb_os: str | None = None
+    # vCenter values
+    vc_vcpu: int | None = None
+    vc_vram_gb: int | None = None
+    vc_cluster: str | None = None
+    vc_power_state: str | None = None
+    vc_os: str | None = None
+    # Diff flags
+    vcpu_diff: bool = False
+    vram_diff: bool = False
+    cluster_diff: bool = False
+    diff_count: int = 0
+
+
+class CmdbVcenterDiffResponse(BaseModel):
+    total: int
+    matched: int
+    cmdb_only: int
+    with_diff: int
+    vcpu_diff_count: int = 0
+    vram_diff_count: int = 0
+    cluster_diff_count: int = 0
+    items: list[CmdbVcenterDiffItem]
+    synced_at: str | None = None
+
+
+# ── Security Dashboard ─────────────────────────────────────────────────────────
+
+class SecurityServerItem(BaseModel):
+    name: str
+    ci_type: str = "vm"
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    os_raw: str | None = None
+    os_product: str | None = None
+    os_status: str | None = None
+    eol_date: str | None = None
+    days_until_eol: int | None = None
+
+
+class SecurityDashboardResponse(BaseModel):
+    eol_count: int = 0
+    ending_soon_count: int = 0
+    unmonitored_vm_count: int = 0
+    unmonitored_phys_count: int = 0
+    eol_items: list[SecurityServerItem] = []
+    ending_soon_items: list[SecurityServerItem] = []
+    unmonitored_vms: list[SecurityServerItem] = []
+    unmonitored_phys: list[SecurityServerItem] = []
+    synced_at: str | None = None
+
+
+# ── VM Config Changes ──────────────────────────────────────────────────────────
+
+class VmChangeItem(BaseModel):
+    id: int
+    name: str
+    change_type: str  # 'added', 'removed', 'vcpu', 'vram_gb', 'cluster', 'status', 'os_family'
+    old_value: str | None = None
+    new_value: str | None = None
+    detected_at: str  # ISO datetime
+
+
+class VmChangesResponse(BaseModel):
+    total: int
+    period_days: int
+    items: list[VmChangeItem]
+
+
+# ── Topology ───────────────────────────────────────────────────────────────────
+
+class TopologyVmItem(BaseModel):
+    name: str
+    power_state: str = "unknown"
+    vcpu: int | None = None
+    vram_gb: int | None = None
+
+
+class TopologyHostItem(BaseModel):
+    moid: str
+    name: str
+    num_cpu_cores: int | None = None
+    memory_gb: int | None = None
+    cpu_usage_pct: float | None = None
+    mem_usage_pct: float | None = None
+    vm_count: int = 0
+    powered_on: int = 0
+    vms: list[TopologyVmItem] = []
+
+
+class TopologyClusterItem(BaseModel):
+    name: str
+    host_count: int = 0
+    vm_count: int = 0
+    powered_on: int = 0
+    status: str = "unknown"
+    host_cpu_pct: float | None = None
+    host_ram_pct: float | None = None
+    hosts: list[TopologyHostItem] = []
+
+
+class TopologyResponse(BaseModel):
+    total_clusters: int
+    total_hosts: int
+    total_vms: int
+    total_powered_on: int
+    clusters: list[TopologyClusterItem]
+    synced_at: str | None = None
+
+
+# ── Zombie Servers ─────────────────────────────────────────────────────────────
+
+class ZombieServerItem(BaseModel):
+    name: str
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    cluster: str | None = None
+    os_family: str | None = None
+    vcpu: int | None = None
+    vram_gb: int | None = None
+    power_state: str = "unknown"
+    avg_cpu_pct: float | None = None
+    max_cpu_pct: float | None = None   # peak CPU over the period
+    avg_ram_pct: float | None = None
+    max_ram_pct: float | None = None   # peak RAM over the period
+    data_coverage_pct: float | None = None  # % of expected hourly buckets with data
+    in_zabbix: bool = False
+    in_vcenter: bool = False
+    zombie_score: int = 0
+    signals: list[str] = []   # low_cpu | low_ram | no_zabbix | no_metrics | wasted_alloc
+
+
+class ZombieServerResponse(BaseModel):
+    total: int
+    score5: int = 0
+    score4: int = 0
+    score3: int = 0
+    score2: int = 0
+    score1: int = 0
+    items: list[ZombieServerItem]
+    synced_at: str | None = None
+    period_days: int = 90

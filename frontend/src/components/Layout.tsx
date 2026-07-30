@@ -6,7 +6,8 @@ import GlobalSearch from "./GlobalSearch";
 
 const navItems = [
   { to: "/", label: "Дашборд", icon: "📊" },
-  { to: "/comparison", label: "CMDB vs Zabbix", icon: "🔍" },
+  { to: "/comparison",    label: "CMDB vs Zabbix",  icon: "🔍" },
+  { to: "/cmdb-vcenter",  label: "CMDB vs vCenter", icon: "🔎" },
   { to: "/resources", label: "Ресурси ВМ", icon: "💻" },
   { to: "/physical-servers", label: "Фіз. сервери", icon: "🗄️" },
   { to: "/clusters", label: "Кластери", icon: "🖥️" },
@@ -15,6 +16,14 @@ const navItems = [
   { to: "/zabbix-problems", label: "Zabbix Проблеми", icon: "🚨" },
   { to: "/os-report",      label: "Операційні ОС",  icon: "🖥" },
   { to: "/cmdb-stats",     label: "Зміни CMDB",     icon: "📋" },
+  { to: "/uptime",         label: "Аптайм ВМ",      icon: "⏱️" },
+  { to: "/decommission",   label: "Виведення ВМ",   icon: "🗑️" },
+  { to: "/decommissioned", label: "Виведені з екс.", icon: "📴" },
+  { to: "/capacity",       label: "Capacity Plan",  icon: "📐" },
+  { to: "/security",      label: "Безпека",         icon: "🛡️" },
+  { to: "/vm-changes",    label: "Зміни VM",        icon: "🔄" },
+  { to: "/topology",       label: "Топологія",       icon: "🗺️" },
+  { to: "/zombie-servers", label: "Зомбі-сервери",  icon: "💀" },
 ];
 
 function formatSyncedAt(iso: string | null | undefined): string {

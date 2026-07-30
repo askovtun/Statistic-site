@@ -110,6 +110,7 @@ def _list_vms_sync() -> list[dict]:
             # OS: prefer guest-reported (VMware Tools inside VM), fall back to config
             guest_os = (guest.guestFullName or None) if guest else None
             config_os = (s.config.guestFullName or None) if s.config else None
+            hw = s.config.hardware if s.config else None
             out.append({
                 "moid": vm._moId,
                 "name": s.config.name,
@@ -121,6 +122,8 @@ def _list_vms_sync() -> list[dict]:
                 "runtime_host": runtime_host,
                 "os_full_name": guest_os or config_os,
                 "os_from_tools": bool(guest_os),
+                "vcpu": hw.numCPU if hw else None,
+                "vram_gb": round(hw.memoryMB / 1024) if hw and hw.memoryMB else None,
             })
         view.Destroy()
         return out
@@ -420,3 +423,91 @@ async def list_hosts() -> list[dict]:
     except Exception:
         log.exception("vCenter list_hosts failed")
         return []
+
+
+def _list_cluster_storage_sync() -> dict[str, dict]:
+    """Per-cluster datastore capacity and free space (bytes → GB).
+
+    Uses PropertyCollector for a single batch SOAP call: first fetch
+    ClusterComputeResource → datastore refs, then fetch datastore summaries.
+    Only accessible datastores are counted.
+    """
+    si = _connect()
+    if si is None:
+        return {}
+    try:
+        content = si.RetrieveContent()
+        pc = content.propertyCollector
+
+        traversal = [
+            vim.TraversalSpec(
+                name="visitFolders", type=vim.Folder, path="childEntity", skip=False,
+                selectSet=[
+                    vim.SelectionSpec(name="visitFolders"),
+                    vim.SelectionSpec(name="visitDC"),
+                ],
+            ),
+            vim.TraversalSpec(
+                name="visitDC", type=vim.Datacenter, path="hostFolder", skip=False,
+                selectSet=[vim.SelectionSpec(name="visitFolders")],
+            ),
+        ]
+        obj_spec = vim.ObjectSpec(obj=content.rootFolder, skip=True, selectSet=traversal)
+
+        cl_filter = vim.PropertyFilterSpec(
+            objectSet=[obj_spec],
+            propSet=[vim.PropertySpec(
+                type=vim.ClusterComputeResource, all=False, pathSet=["name", "datastore"]
+            )],
+        )
+
+        cluster_ds_refs: dict[str, list[str]] = {}
+        all_ds_moids: set[str] = set()
+        for obj in pc.RetrieveContents([cl_filter]):
+            pd = {p.name: p.val for p in obj.propSet}
+            cl_name = pd.get("name", "")
+            moids = [ds._moId for ds in (pd.get("datastore") or [])]
+            cluster_ds_refs[cl_name] = moids
+            all_ds_moids.update(moids)
+
+        if not all_ds_moids:
+            return {}
+
+        ds_obj_specs = [vim.ObjectSpec(obj=vim.Datastore(m, si._stub)) for m in all_ds_moids]
+        ds_filter = vim.PropertyFilterSpec(
+            objectSet=ds_obj_specs,
+            propSet=[vim.PropertySpec(
+                type=vim.Datastore, all=False,
+                pathSet=["summary.capacity", "summary.freeSpace", "summary.accessible"],
+            )],
+        )
+        ds_info: dict[str, dict] = {}
+        for obj in pc.RetrieveContents([ds_filter]):
+            pd2 = {p.name: p.val for p in obj.propSet}
+            if pd2.get("summary.accessible", True):
+                ds_info[obj.obj._moId] = {
+                    "capacity": pd2.get("summary.capacity") or 0,
+                    "free": pd2.get("summary.freeSpace") or 0,
+                }
+
+        result: dict[str, dict] = {}
+        for cl_name, ds_moids in cluster_ds_refs.items():
+            total = sum(ds_info.get(m, {}).get("capacity", 0) for m in ds_moids)
+            free = sum(ds_info.get(m, {}).get("free", 0) for m in ds_moids)
+            if total:
+                result[cl_name] = {
+                    "total_storage_gb": round(total / (1024 ** 3)),
+                    "free_storage_gb": round(free / (1024 ** 3)),
+                    "storage_used_pct": round((total - free) / total * 100, 1),
+                }
+        return result
+    finally:
+        Disconnect(si)
+
+
+async def list_cluster_storage() -> dict[str, dict]:
+    try:
+        return await asyncio.to_thread(_list_cluster_storage_sync)
+    except Exception:
+        log.exception("vCenter list_cluster_storage failed")
+        return {}

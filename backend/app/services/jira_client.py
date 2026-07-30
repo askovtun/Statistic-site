@@ -190,6 +190,27 @@ async def get_all_clusters() -> list[dict]:
     return result
 
 
+async def get_objects_minimal(type_ids: list[int]) -> list[dict]:
+    """Fetch objects of given type IDs with only jira_id/name/jira_updated.
+
+    Much lighter than the full object fetches — no attr_map lookup needed.
+    Used for CMDB change tracking of CI types we don't analyse further.
+    """
+    result: list[dict] = []
+    for type_id in type_ids:
+        raw = await _get_all_objects(type_id)
+        for obj in raw:
+            jid = str(obj.get("id", ""))
+            if not jid:
+                continue
+            result.append({
+                "jira_id":      jid,
+                "name":         obj.get("label") or obj.get("name") or "",
+                "jira_updated": obj.get("updated"),
+            })
+    return result
+
+
 def _int(val: str | None) -> int | None:
     if val is None:
         return None

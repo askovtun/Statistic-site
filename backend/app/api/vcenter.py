@@ -220,6 +220,28 @@ async def get_vcenter_hosts(
     )
 
 
+def _build_vm_cluster_map() -> dict[str, str | None]:
+    """Build vm_name → cluster lookup from CMDB cache."""
+    vms_cached = db.get("vms")
+    if vms_cached is None:
+        return {}
+    return {vm["name"]: vm.get("cluster") for vm in vms_cached[0]}
+
+
+def _snap_items(raw: list[dict], vm_cluster: dict[str, str | None]) -> list[VCenterSnapshotItem]:
+    return [
+        VCenterSnapshotItem(
+            vm_name=s["vm_name"],
+            name=s["name"],
+            description=s.get("description", ""),
+            created_at=s["created_at"],
+            age_days=s["age_days"],
+            cluster=vm_cluster.get(s["vm_name"]),
+        )
+        for s in raw
+    ]
+
+
 @router.post("/vcenter/snapshots/refresh", response_model=VCenterSnapshotsResponse)
 async def refresh_snapshots():
     """Fetch current VM snapshots directly from vCenter (live call, may take ~10s)."""
@@ -229,16 +251,8 @@ async def refresh_snapshots():
     raw = await vcenter_client.list_snapshots()
     db.set("vcenter_snapshots", raw)
 
-    snapshots = [
-        VCenterSnapshotItem(
-            vm_name=s["vm_name"],
-            name=s["name"],
-            description=s.get("description", ""),
-            created_at=s["created_at"],
-            age_days=s["age_days"],
-        )
-        for s in raw
-    ]
+    vm_cluster = _build_vm_cluster_map()
+    snapshots = _snap_items(raw, vm_cluster)
     return VCenterSnapshotsResponse(total=len(snapshots), snapshots=snapshots)
 
 
@@ -249,15 +263,6 @@ async def get_snapshots():
     if snap_cached is None:
         return VCenterSnapshotsResponse(total=0, snapshots=[])
 
-    raw = snap_cached[0]
-    snapshots = [
-        VCenterSnapshotItem(
-            vm_name=s["vm_name"],
-            name=s["name"],
-            description=s.get("description", ""),
-            created_at=s["created_at"],
-            age_days=s["age_days"],
-        )
-        for s in raw
-    ]
+    vm_cluster = _build_vm_cluster_map()
+    snapshots = _snap_items(snap_cached[0], vm_cluster)
     return VCenterSnapshotsResponse(total=len(snapshots), snapshots=snapshots)

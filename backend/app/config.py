@@ -13,6 +13,19 @@ class Settings(BaseSettings):
     jira_cluster_type_id: int = 85
     jira_os_type_id: int = 92
     jira_physical_server_type_id: int = 83
+    jira_application_type_id: int = 94
+    jira_it_service_type_id: int = 110
+    jira_db_instance_type_id: int = 88
+    jira_storage_type_id: int = 87
+    # Comma-separated type IDs to aggregate into one ci_type bucket
+    jira_network_device_type_ids: str = "102,103,104,105"  # Router,Switch,Firewall,AP
+    jira_pbx_type_ids: str = "120,121"                     # PBX Hardware, PBX Software
+
+    def network_device_type_id_list(self) -> list[int]:
+        return [int(x.strip()) for x in self.jira_network_device_type_ids.split(",") if x.strip()]
+
+    def pbx_type_id_list(self) -> list[int]:
+        return [int(x.strip()) for x in self.jira_pbx_type_ids.split(",") if x.strip()]
 
     # Zabbix
     zabbix_url: str = "https://zabbix.example.com"

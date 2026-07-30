@@ -407,6 +407,259 @@ def get_cluster_daily_trend(moids: list[str], period_days: int) -> list[dict]:
     return points
 
 
+def get_cluster_capacity_metrics(moids: list[str], period_days: int) -> dict:
+    """Weighted-average and peak CPU/RAM % for a set of vCenter MOIDs over period_days."""
+    if not moids:
+        return {}
+    cutoff = int(time.time()) - period_days * 86400
+    placeholders = ",".join("?" * len(moids))
+    with db._connect() as conn:
+        rows = conn.execute(
+            f"SELECT metric, SUM(avg*num)/SUM(num) AS w_avg, MAX(max) AS peak "
+            f"FROM metric_hourly WHERE source='vcenter' AND hostid IN ({placeholders}) "
+            f"AND hour_clock>=? AND num>0 GROUP BY metric",
+            (*moids, cutoff),
+        ).fetchall()
+    result: dict[str, float | None] = {}
+    for metric, w_avg, peak in rows:
+        if metric == ITEM_VC_CPU:
+            result["avg_cpu_pct"] = round(w_avg, 1) if w_avg is not None else None
+            result["peak_cpu_pct"] = round(peak, 1) if peak is not None else None
+        elif metric == ITEM_VC_MEM:
+            result["avg_ram_pct"] = round(w_avg, 1) if w_avg is not None else None
+            result["peak_ram_pct"] = round(peak, 1) if peak is not None else None
+    return result
+
+
+def get_period_metrics_batch(
+    hostid_map: dict[str, str],
+    period_days: int,
+) -> dict[str, dict]:
+    """Batch version of get_period_metrics — one SQL query for all VMs.
+
+    Returns {vm_name: dict} with the same keys as get_period_metrics().
+    VMs with no data in the period are absent from the result.
+    """
+    if not hostid_map:
+        return {}
+
+    cutoff = int(time.time()) - period_days * 86400
+    inv = {v: k for k, v in hostid_map.items()}
+    hostids = list(hostid_map.values())
+    ph = ",".join("?" * len(hostids))
+
+    with db._connect() as conn:
+        rows = conn.execute(
+            f"SELECT hostid, metric, SUM(avg*num)/SUM(num), MIN(min), MAX(max) "
+            f"FROM metric_hourly "
+            f"WHERE source='zabbix' AND hostid IN ({ph}) "
+            f"AND hour_clock>=? AND num>0 GROUP BY hostid, metric",
+            [*hostids, cutoff],
+        ).fetchall()
+
+    by_vm: dict[str, dict[str, dict]] = {}
+    for hostid, metric, w_avg, p_min, p_max in rows:
+        vm_name = inv.get(hostid)
+        if vm_name:
+            by_vm.setdefault(vm_name, {})[metric] = {"avg": w_avg, "min": p_min, "max": p_max}
+
+    result: dict[str, dict] = {}
+    for vm_name, vals in by_vm.items():
+        m = dict(_EMPTY_METRICS)
+
+        if ITEM_CPU_UTIL in vals:
+            m["cpu_pct"] = vals[ITEM_CPU_UTIL]["avg"]
+            m["cpu_pct_max"] = vals[ITEM_CPU_UTIL]["max"]
+
+        if ITEM_DISK_FREE_PCT in vals:
+            m["disk_free_pct"] = vals[ITEM_DISK_FREE_PCT]["avg"]
+            m["disk_free_pct_min"] = vals[ITEM_DISK_FREE_PCT]["min"]
+
+        used = vals.get(ITEM_MEM_USED)
+        total = vals.get(ITEM_MEM_TOTAL)
+        if used and total and total["avg"]:
+            m["ram_pct"] = used["avg"] / total["avg"] * 100
+            m["ram_pct_max"] = used["max"] / total["avg"] * 100
+
+        if m["cpu_pct"] is None and ITEM_VMWARE_CPU_PCT in vals:
+            m["cpu_pct"] = vals[ITEM_VMWARE_CPU_PCT]["avg"]
+            m["cpu_pct_max"] = vals[ITEM_VMWARE_CPU_PCT]["max"]
+
+        if m["ram_pct"] is None:
+            vmw_used = vals.get(ITEM_VMWARE_MEM_USED)
+            vmw_total = vals.get(ITEM_VMWARE_MEM_TOTAL)
+            if vmw_used and vmw_total and vmw_total["avg"]:
+                m["ram_pct"] = vmw_used["avg"] / vmw_total["avg"] * 100
+                m["ram_pct_max"] = vmw_used["max"] / vmw_total["avg"] * 100
+
+        if m["ram_pct"] is None and ITEM_MEM_UTILIZATION in vals:
+            m["ram_pct"] = vals[ITEM_MEM_UTILIZATION]["avg"]
+            m["ram_pct_max"] = vals[ITEM_MEM_UTILIZATION]["max"]
+
+        result[vm_name] = m
+
+    return result
+
+
+def get_vcenter_period_metrics_batch(
+    moid_map: dict[str, str],
+    period_days: int,
+) -> dict[str, dict]:
+    """Batch version of get_vcenter_period_metrics — one SQL query for all VMs."""
+    if not moid_map:
+        return {}
+
+    cutoff = int(time.time()) - period_days * 86400
+    inv = {v: k for k, v in moid_map.items()}
+    moids = list(moid_map.values())
+    ph = ",".join("?" * len(moids))
+
+    with db._connect() as conn:
+        rows = conn.execute(
+            f"SELECT hostid, metric, SUM(avg*num)/SUM(num), MIN(min), MAX(max) "
+            f"FROM metric_hourly "
+            f"WHERE source='vcenter' AND hostid IN ({ph}) "
+            f"AND hour_clock>=? AND num>0 GROUP BY hostid, metric",
+            [*moids, cutoff],
+        ).fetchall()
+
+    by_vc: dict[str, dict[str, dict]] = {}
+    for moid, metric, w_avg, p_min, p_max in rows:
+        vm_name = inv.get(moid)
+        if vm_name:
+            by_vc.setdefault(vm_name, {})[metric] = {"avg": w_avg, "min": p_min, "max": p_max}
+
+    result: dict[str, dict] = {}
+    for vm_name, vals in by_vc.items():
+        m = dict(_EMPTY_VCENTER_METRICS)
+
+        if ITEM_VC_CPU in vals:
+            m["vc_cpu_pct"] = vals[ITEM_VC_CPU]["avg"]
+            m["vc_cpu_pct_max"] = vals[ITEM_VC_CPU]["max"]
+
+        if ITEM_VC_MEM in vals:
+            m["vc_ram_pct"] = vals[ITEM_VC_MEM]["avg"]
+            m["vc_ram_pct_max"] = vals[ITEM_VC_MEM]["max"]
+
+        if ITEM_VC_DISK_IO in vals:
+            m["disk_io_kbps"] = vals[ITEM_VC_DISK_IO]["avg"]
+            m["disk_io_kbps_max"] = vals[ITEM_VC_DISK_IO]["max"]
+
+        if ITEM_VC_DISK_SPACE in vals:
+            m["disk_used_pct"] = vals[ITEM_VC_DISK_SPACE]["avg"]
+            m["disk_used_pct_max"] = vals[ITEM_VC_DISK_SPACE]["max"]
+
+        if ITEM_VC_CPU_READY in vals:
+            raw = vals[ITEM_VC_CPU_READY]["avg"]
+            m["cpu_ready_pct"] = raw / 864000.0 if raw is not None else None
+
+        if ITEM_VC_MEM_BALLOON in vals:
+            m["mem_balloon_kb"] = vals[ITEM_VC_MEM_BALLOON]["avg"]
+
+        if ITEM_VC_MEM_SWAPPED in vals:
+            m["mem_swapped_kb"] = vals[ITEM_VC_MEM_SWAPPED]["avg"]
+
+        result[vm_name] = m
+
+    return result
+
+
+def get_zombie_metrics_batch(
+    hostid_map: dict[str, str],
+    moid_map: dict[str, str],
+    period_days: int,
+) -> dict[str, dict]:
+    """Aggregate Zabbix+vCenter metrics for all VMs in two SQL queries instead of N.
+
+    Returns {vm_name: {
+        cpu_avg, cpu_max, ram_avg, ram_max, coverage_pct,   # from Zabbix
+        vc_cpu_avg, vc_cpu_max, vc_ram_avg, vc_ram_max,    # from vCenter
+    }}.
+    Values are floats or absent (key not present in sub-dict).
+    """
+    cutoff = int(time.time()) - period_days * 86400
+    expected_buckets = period_days * 24
+    result: dict[str, dict] = {}
+
+    # ── Zabbix: one query for all VMs ─────────────────────────────────────────
+    if hostid_map:
+        inv = {v: k for k, v in hostid_map.items()}
+        hostids = list(hostid_map.values())
+        ph = ",".join("?" * len(hostids))
+        with db._connect() as conn:
+            rows = conn.execute(
+                f"SELECT hostid, metric, SUM(avg*num)/SUM(num), MAX(max), COUNT(*) "
+                f"FROM metric_hourly "
+                f"WHERE source='zabbix' AND hostid IN ({ph}) "
+                f"AND hour_clock>=? AND num>0 GROUP BY hostid, metric",
+                [*hostids, cutoff],
+            ).fetchall()
+
+        by_vm: dict[str, dict[str, tuple]] = {}
+        for hostid, metric, w_avg, p_max, cnt in rows:
+            vm_name = inv.get(hostid)
+            if vm_name:
+                by_vm.setdefault(vm_name, {})[metric] = (w_avg, p_max, cnt)
+
+        for vm_name, m in by_vm.items():
+            d: dict = {}
+            cpu_item = m.get(ITEM_CPU_UTIL) or m.get(ITEM_VMWARE_CPU_PCT)
+            if cpu_item:
+                d["cpu_avg"] = cpu_item[0]
+                d["cpu_max"] = cpu_item[1]
+                d["coverage_pct"] = round(min(100.0, cpu_item[2] / expected_buckets * 100), 1)
+
+            used = m.get(ITEM_MEM_USED)
+            total = m.get(ITEM_MEM_TOTAL)
+            if used and total and total[0]:
+                d["ram_avg"] = used[0] / total[0] * 100
+                d["ram_max"] = used[1] / total[0] * 100
+            elif m.get(ITEM_MEM_UTILIZATION):
+                util = m[ITEM_MEM_UTILIZATION]
+                d["ram_avg"] = util[0]
+                d["ram_max"] = util[1]
+            elif m.get(ITEM_VMWARE_MEM_USED) and m.get(ITEM_VMWARE_MEM_TOTAL):
+                vmu = m[ITEM_VMWARE_MEM_USED]
+                vmt = m[ITEM_VMWARE_MEM_TOTAL]
+                if vmt[0]:
+                    d["ram_avg"] = vmu[0] / vmt[0] * 100
+                    d["ram_max"] = vmu[1] / vmt[0] * 100
+
+            result[vm_name] = d
+
+    # ── vCenter: one query for all VMs ────────────────────────────────────────
+    if moid_map:
+        inv_vc = {v: k for k, v in moid_map.items()}
+        moids = list(moid_map.values())
+        ph = ",".join("?" * len(moids))
+        with db._connect() as conn:
+            rows = conn.execute(
+                f"SELECT hostid, metric, SUM(avg*num)/SUM(num), MAX(max) "
+                f"FROM metric_hourly "
+                f"WHERE source='vcenter' AND hostid IN ({ph}) "
+                f"AND hour_clock>=? AND num>0 GROUP BY hostid, metric",
+                [*moids, cutoff],
+            ).fetchall()
+
+        by_vc: dict[str, dict[str, tuple]] = {}
+        for moid, metric, w_avg, p_max in rows:
+            vm_name = inv_vc.get(moid)
+            if vm_name:
+                by_vc.setdefault(vm_name, {})[metric] = (w_avg, p_max)
+
+        for vm_name, m in by_vc.items():
+            vc: dict = {}
+            if ITEM_VC_CPU in m:
+                vc["vc_cpu_avg"] = m[ITEM_VC_CPU][0]
+                vc["vc_cpu_max"] = m[ITEM_VC_CPU][1]
+            if ITEM_VC_MEM in m:
+                vc["vc_ram_avg"] = m[ITEM_VC_MEM][0]
+                vc["vc_ram_max"] = m[ITEM_VC_MEM][1]
+            result.setdefault(vm_name, {}).update(vc)
+
+    return result
+
+
 def prune(max_age_days: int = 95) -> None:
     cutoff = int(time.time()) - max_age_days * 86400
     with db._connect() as conn:

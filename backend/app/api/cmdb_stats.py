@@ -5,9 +5,15 @@ from app.services import cmdb_tracker, db
 router = APIRouter(tags=["cmdb-stats"])
 
 _CI_TYPE_LABELS = {
-    "vm":       "Віртуальні машини",
-    "physical": "Фізичні сервери",
-    "cluster":  "Кластери",
+    "vm":             "Віртуальні машини",
+    "physical":       "Фізичні сервери",
+    "cluster":        "Кластери",
+    "application":    "Застосунки",
+    "it_service":     "IT-сервіси",
+    "db_instance":    "БД",
+    "storage":        "Сховища",
+    "network_device": "Мережеве обладн.",
+    "pbx":            "АТС",
 }
 
 

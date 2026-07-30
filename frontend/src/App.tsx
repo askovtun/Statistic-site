@@ -11,6 +11,15 @@ import VCenter from "./pages/VCenter";
 import ZabbixProblems from "./pages/ZabbixProblems";
 import OsReport from "./pages/OsReport";
 import CmdbStats from "./pages/CmdbStats";
+import UptimeReport from "./pages/UptimeReport";
+import DecommissionPage from "./pages/DecommissionPage";
+import DecommissionedPage from "./pages/DecommissionedPage";
+import CapacityPlanning from "./pages/CapacityPlanning";
+import SecurityDashboard from "./pages/SecurityDashboard";
+import VmChanges from "./pages/VmChanges";
+import TopologyMap from "./pages/TopologyMap";
+import CmdbVcenter from "./pages/CmdbVcenter";
+import ZombieServers from "./pages/ZombieServers";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -37,6 +46,15 @@ export default function App() {
             <Route path="zabbix-problems" element={<ZabbixProblems />} />
             <Route path="os-report" element={<OsReport />} />
             <Route path="cmdb-stats" element={<CmdbStats />} />
+            <Route path="uptime" element={<UptimeReport />} />
+            <Route path="decommission" element={<DecommissionPage />} />
+            <Route path="decommissioned" element={<DecommissionedPage />} />
+            <Route path="capacity" element={<CapacityPlanning />} />
+            <Route path="security" element={<SecurityDashboard />} />
+            <Route path="vm-changes" element={<VmChanges />} />
+            <Route path="topology" element={<TopologyMap />} />
+            <Route path="cmdb-vcenter" element={<CmdbVcenter />} />
+            <Route path="zombie-servers" element={<ZombieServers />} />
           </Route>
         </Routes>
       </BrowserRouter>

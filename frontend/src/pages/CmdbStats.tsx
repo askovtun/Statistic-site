@@ -20,9 +20,15 @@ const PERIOD_OPTIONS = [
 ];
 
 const CI_TYPE_LABELS: Record<string, string> = {
-  vm:       "ВМ",
-  physical: "Фіз. сервери",
-  cluster:  "Кластери",
+  vm:             "ВМ",
+  physical:       "Фіз. сервери",
+  cluster:        "Кластери",
+  application:    "Застосунки",
+  it_service:     "IT-сервіси",
+  db_instance:    "БД",
+  storage:        "Сховища",
+  network_device: "Мережеве обл.",
+  pbx:            "АТС",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -126,35 +132,35 @@ export default function CmdbStats() {
         )}
       </p>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-        <div className="col-span-2 sm:col-span-3 lg:col-span-3 grid grid-cols-3 gap-3">
-          {(Object.entries(currentTotals) as [string, number][]).map(([type, count]) => (
-            <div key={type} className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-2xl font-bold text-gray-800">{count}</p>
-              <p className="text-xs text-gray-500 mt-0.5">{CI_TYPE_LABELS[type] ?? type}</p>
-            </div>
-          ))}
-          {Object.keys(currentTotals).length > 0 && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-              <p className="text-2xl font-bold text-blue-700">{totalCurrent}</p>
-              <p className="text-xs text-blue-600 mt-0.5">Всього CI</p>
-            </div>
-          )}
+      {/* Summary cards — CI totals */}
+      <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3 mb-4">
+        {(Object.entries(currentTotals) as [string, number][]).map(([type, count]) => (
+          <div key={type} className="bg-white rounded-xl border border-gray-200 p-3">
+            <p className="text-xl font-bold text-gray-800">{count}</p>
+            <p className="text-xs text-gray-500 mt-0.5">{CI_TYPE_LABELS[type] ?? type}</p>
+          </div>
+        ))}
+        {Object.keys(currentTotals).length > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+            <p className="text-xl font-bold text-blue-700">{totalCurrent}</p>
+            <p className="text-xs text-blue-600 mt-0.5">Всього CI</p>
+          </div>
+        )}
+      </div>
+
+      {/* Period changes summary */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
+        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+          <p className="text-2xl font-bold text-green-700">+{periodAdded}</p>
+          <p className="text-xs text-green-600 mt-0.5">Додано за період</p>
         </div>
-        <div className="col-span-2 sm:col-span-3 lg:col-span-3 grid grid-cols-3 gap-3">
-          <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-            <p className="text-2xl font-bold text-green-700">+{periodAdded}</p>
-            <p className="text-xs text-green-600 mt-0.5">Додано</p>
-          </div>
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-            <p className="text-2xl font-bold text-blue-700">~{periodUpdated}</p>
-            <p className="text-xs text-blue-600 mt-0.5">Змінено</p>
-          </div>
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-            <p className="text-2xl font-bold text-red-700">-{periodRemoved}</p>
-            <p className="text-xs text-red-600 mt-0.5">Видалено</p>
-          </div>
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+          <p className="text-2xl font-bold text-blue-700">~{periodUpdated}</p>
+          <p className="text-xs text-blue-600 mt-0.5">Змінено за період</p>
+        </div>
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+          <p className="text-2xl font-bold text-red-700">-{periodRemoved}</p>
+          <p className="text-xs text-red-600 mt-0.5">Видалено за період</p>
         </div>
       </div>
 

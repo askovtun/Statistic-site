@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api, type ResourceItem } from "../api/client";
+import type { ZabbixHostProblems } from "../api/client";
 import {
   ComposedChart, Line, CartesianGrid, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine,
@@ -104,12 +105,38 @@ function formatTooltipLabel(ts: unknown) {
   });
 }
 
+const SEV_LABEL: Record<number, string> = {
+  5: "Катастрофа",
+  4: "Висока",
+  3: "Середня",
+  2: "Попередж.",
+  1: "Інфо",
+  0: "Невизначено",
+};
+const SEV_COLOR: Record<number, string> = {
+  5: "text-red-700 bg-red-50",
+  4: "text-orange-600 bg-orange-50",
+  3: "text-amber-600 bg-amber-50",
+  2: "text-yellow-600 bg-yellow-50",
+  1: "text-blue-600 bg-blue-50",
+  0: "text-gray-500 bg-gray-50",
+};
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const comp = useQuery({ queryKey: ["comparison"], queryFn: api.comparison });
   const res = useQuery({ queryKey: ["resources"], queryFn: () => api.resources() });
   const cl = useQuery({ queryKey: ["clusters"], queryFn: api.clusters });
   const phys = useQuery({ queryKey: ["physical-servers", 30], queryFn: () => api.physicalServers(30) });
+  const osRep = useQuery({ queryKey: ["osReport"], queryFn: api.osReport, retry: false });
+  const cmdbSt = useQuery({ queryKey: ["cmdbStats", 7], queryFn: () => api.cmdbStats(7), retry: false });
+  const decomm = useQuery({ queryKey: ["decommission"], queryFn: api.decommissionCandidates, retry: false });
+  const zbxProbs = useQuery({
+    queryKey: ["zabbixProblems"],
+    queryFn: () => api.zabbixProblems(),
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+  });
 
   const vcHealth = useQuery({
     queryKey: ["vcenterHealth", 30],
@@ -188,10 +215,97 @@ export default function Dashboard() {
   const trendPoints = clusterTrend.data?.points ?? [];
   const hasTrendData = trendPoints.some((p) => p.avg_cpu_pct != null || p.avg_ram_pct != null);
 
+  // KPI computations
+  const eolCount      = (osRep.data?.eol ?? 0) + (osRep.data?.ending_soon ?? 0);
+  const snaps30       = (vcSnaps.data?.snapshots ?? []).filter((s) => s.age_days >= 30).length;
+  const newCiWeek     = (cmdbSt.data?.days ?? []).reduce((sum, d) => sum + d.added, 0);
+  const decommCount   = decomm.data?.total ?? 0;
+  const zbxTotal      = zbxProbs.data?.total_problems ?? 0;
+  const zbxDisaster   = zbxProbs.data?.disaster ?? 0;
+
+  // Top 5 Zabbix problem hosts by total count
+  const topZbxHosts = useMemo<ZabbixHostProblems[]>(() => {
+    return [...(zbxProbs.data?.hosts ?? [])]
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  }, [zbxProbs.data]);
+
   return (
     <div className="p-4 md:p-6 lg:p-8">
       <h1 className="text-2xl font-bold text-gray-800 mb-1">Дашборд</h1>
-      <p className="text-sm text-gray-500 mb-8">Загальний стан інфраструктури</p>
+      <p className="text-sm text-gray-500 mb-5">Загальний стан інфраструктури</p>
+
+      {/* ── Потребує уваги — KPI ─────────────────────────────────────────────── */}
+      <section className="mb-8">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
+          Потребує уваги
+        </h2>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <button
+            onClick={() => navigate("/os-report")}
+            className={`text-left rounded-xl p-4 border transition hover:shadow-md ${
+              eolCount > 0 ? "bg-red-50 border-red-200" : "bg-white border-gray-200"
+            }`}
+          >
+            <p className={`text-2xl font-bold ${eolCount > 0 ? "text-red-700" : "text-gray-700"}`}>
+              {osRep.isLoading ? "…" : eolCount}
+            </p>
+            <p className={`text-xs mt-0.5 ${eolCount > 0 ? "text-red-600" : "text-gray-500"}`}>
+              EOL / закінчується підтримка ОС
+            </p>
+          </button>
+          <button
+            onClick={() => navigate("/vcenter")}
+            className={`text-left rounded-xl p-4 border transition hover:shadow-md ${
+              snaps30 > 0 ? "bg-amber-50 border-amber-200" : "bg-white border-gray-200"
+            }`}
+          >
+            <p className={`text-2xl font-bold ${snaps30 > 0 ? "text-amber-700" : "text-gray-700"}`}>
+              {vcSnaps.isLoading ? "…" : snaps30}
+            </p>
+            <p className={`text-xs mt-0.5 ${snaps30 > 0 ? "text-amber-600" : "text-gray-500"}`}>
+              Знімків &gt;30 днів
+            </p>
+          </button>
+          <button
+            onClick={() => navigate("/zabbix-problems")}
+            className={`text-left rounded-xl p-4 border transition hover:shadow-md ${
+              zbxDisaster > 0 ? "bg-red-50 border-red-200" :
+              zbxTotal > 0   ? "bg-orange-50 border-orange-200" : "bg-white border-gray-200"
+            }`}
+          >
+            <p className={`text-2xl font-bold ${
+              zbxDisaster > 0 ? "text-red-700" :
+              zbxTotal > 0   ? "text-orange-600" : "text-gray-700"
+            }`}>
+              {zbxProbs.isLoading ? "…" : zbxTotal}
+            </p>
+            <p className={`text-xs mt-0.5 ${zbxDisaster > 0 ? "text-red-600" : zbxTotal > 0 ? "text-orange-600" : "text-gray-500"}`}>
+              Активних Zabbix-проблем
+            </p>
+          </button>
+          <button
+            onClick={() => navigate("/decommission")}
+            className={`text-left rounded-xl p-4 border transition hover:shadow-md ${
+              decommCount > 0 ? "bg-gray-100 border-gray-300" : "bg-white border-gray-200"
+            }`}
+          >
+            <p className={`text-2xl font-bold ${decommCount > 0 ? "text-gray-700" : "text-gray-700"}`}>
+              {decomm.isLoading ? "…" : decommCount}
+            </p>
+            <p className="text-xs mt-0.5 text-gray-500">Кандидатів на виведення</p>
+          </button>
+          <button
+            onClick={() => navigate("/cmdb-stats")}
+            className="text-left rounded-xl p-4 border border-blue-200 bg-blue-50 transition hover:shadow-md"
+          >
+            <p className="text-2xl font-bold text-blue-700">
+              {cmdbSt.isLoading ? "…" : `+${newCiWeek}`}
+            </p>
+            <p className="text-xs mt-0.5 text-blue-600">Нових CI за тиждень</p>
+          </button>
+        </div>
+      </section>
 
       {loading && (
         <p className="text-gray-400 text-sm animate-pulse">Завантаження даних...</p>
@@ -352,6 +466,66 @@ export default function Dashboard() {
           />
         </div>
       </section>
+
+      {/* ── Топ Zabbix-проблем ────────────────────────────────────────────────── */}
+      {!zbxProbs.isLoading && !zbxProbs.isError && zbxTotal > 0 && (
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+              Топ-5 хостів Zabbix за кількістю проблем
+            </h2>
+            <button onClick={() => navigate("/zabbix-problems")} className="text-xs text-blue-600 hover:underline">
+              Всі проблеми →
+            </button>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-2.5 text-left w-6">#</th>
+                  <th className="px-4 py-2.5 text-left">Хост</th>
+                  <th className="px-4 py-2.5 text-right">Катаст.</th>
+                  <th className="px-4 py-2.5 text-right">Висока</th>
+                  <th className="px-4 py-2.5 text-right">Середня</th>
+                  <th className="px-4 py-2.5 text-right">Всього</th>
+                  <th className="px-4 py-2.5 text-left">Макс. серйозність</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {topZbxHosts.map((h: ZabbixHostProblems, i) => (
+                  <tr key={h.hostid} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 text-xs text-gray-400">{i + 1}</td>
+                    <td className="px-4 py-2 font-medium text-gray-800 max-w-xs truncate" title={h.host_name}>
+                      {h.host_name}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      {h.disaster > 0
+                        ? <span className="font-bold text-red-700">{h.disaster}</span>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      {h.high > 0
+                        ? <span className="font-semibold text-orange-600">{h.high}</span>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      {h.average > 0
+                        ? <span className="text-amber-600">{h.average}</span>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right font-bold text-gray-700">{h.total}</td>
+                    <td className="px-4 py-2">
+                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${SEV_COLOR[h.max_severity] ?? "bg-gray-100 text-gray-500"}`}>
+                        {SEV_LABEL[h.max_severity] ?? String(h.max_severity)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* ── Проблемні ВМ (vCenter) ────────────────────────────────────────────── */}
       {showVcenterWidget && (

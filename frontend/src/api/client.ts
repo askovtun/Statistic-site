@@ -242,6 +242,7 @@ export interface VCenterSnapshotItem {
   description: string;
   created_at: string;
   age_days: number;
+  cluster: string | null;
 }
 
 export interface VCenterSnapshotsResponse {
@@ -265,6 +266,8 @@ export interface OsServerItem {
   cluster: string | null;
   fqdn: string | null;
   primary_ip: string | null;
+  os_from_tools: boolean;
+  [key: string]: unknown;
 }
 
 export interface OsSummaryItem {
@@ -285,6 +288,172 @@ export interface OsReportResponse {
   unknown: number;
   os_types: OsSummaryItem[];
   servers: OsServerItem[];
+  synced_at: string | null;
+}
+
+// ── OS Progress ───────────────────────────────────────────────────────────────
+
+export interface OsProgressItem {
+  os_raw: string;
+  os_product: string | null;
+  os_vendor: string | null;
+  eol_date: string | null;
+  current_status: OsStatus;
+  current_count: number;
+  baseline_status: OsStatus | null;
+  baseline_count: number | null;
+  delta: number | null;
+}
+
+export interface OsUpgradedServerItem {
+  name: string;
+  old_status: OsStatus;
+  new_status: OsStatus;
+  os_product: string | null;
+  os_raw: string | null;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+}
+
+export interface OsProgressResponse {
+  baseline_taken_at: string | null;
+  baseline_label: string | null;
+  baseline_total: number | null;
+  baseline_eol: number | null;
+  baseline_ending_soon: number | null;
+  baseline_supported: number | null;
+  baseline_unknown: number | null;
+  current_total: number;
+  current_eol: number;
+  current_ending_soon: number;
+  current_supported: number;
+  current_unknown: number;
+  eol_delta: number | null;
+  ending_soon_delta: number | null;
+  supported_delta: number | null;
+  items: OsProgressItem[];
+  upgraded_servers: OsUpgradedServerItem[];
+}
+
+// ── Security Dashboard ────────────────────────────────────────────────────────
+
+export interface SecurityServerItem {
+  name: string;
+  ci_type: string;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+  os_raw: string | null;
+  os_product: string | null;
+  os_status: string | null;
+  eol_date: string | null;
+  days_until_eol: number | null;
+}
+
+export interface SecurityDashboardResponse {
+  eol_count: number;
+  ending_soon_count: number;
+  unmonitored_vm_count: number;
+  unmonitored_phys_count: number;
+  eol_items: SecurityServerItem[];
+  ending_soon_items: SecurityServerItem[];
+  unmonitored_vms: SecurityServerItem[];
+  unmonitored_phys: SecurityServerItem[];
+  synced_at: string | null;
+}
+
+// ── VM Config Changes ─────────────────────────────────────────────────────────
+
+export interface VmChangeItem {
+  id: number;
+  name: string;
+  change_type: string;
+  old_value: string | null;
+  new_value: string | null;
+  detected_at: string;
+}
+
+export interface VmChangesResponse {
+  total: number;
+  period_days: number;
+  items: VmChangeItem[];
+}
+
+// ── Topology ──────────────────────────────────────────────────────────────────
+
+export interface TopologyVmItem {
+  name: string;
+  power_state: string;
+  vcpu: number | null;
+  vram_gb: number | null;
+}
+
+export interface TopologyHostItem {
+  moid: string;
+  name: string;
+  num_cpu_cores: number | null;
+  memory_gb: number | null;
+  cpu_usage_pct: number | null;
+  mem_usage_pct: number | null;
+  vm_count: number;
+  powered_on: number;
+  vms: TopologyVmItem[];
+}
+
+export interface TopologyClusterItem {
+  name: string;
+  host_count: number;
+  vm_count: number;
+  powered_on: number;
+  status: string;
+  host_cpu_pct: number | null;
+  host_ram_pct: number | null;
+  hosts: TopologyHostItem[];
+}
+
+export interface TopologyResponse {
+  total_clusters: number;
+  total_hosts: number;
+  total_vms: number;
+  total_powered_on: number;
+  clusters: TopologyClusterItem[];
+  synced_at: string | null;
+}
+
+// ── CMDB vs vCenter Diff ──────────────────────────────────────────────────────
+
+export interface CmdbVcenterDiffItem {
+  name: string;
+  ci_type: "vm" | "physical";
+  fqdn: string | null;
+  primary_ip: string | null;
+  in_vcenter: boolean;
+  cmdb_vcpu: number | null;
+  cmdb_vram_gb: number | null;
+  cmdb_cluster: string | null;
+  cmdb_status: string | null;
+  cmdb_os: string | null;
+  vc_vcpu: number | null;
+  vc_vram_gb: number | null;
+  vc_cluster: string | null;
+  vc_power_state: string | null;
+  vc_os: string | null;
+  vcpu_diff: boolean;
+  vram_diff: boolean;
+  cluster_diff: boolean;
+  diff_count: number;
+}
+
+export interface CmdbVcenterDiffResponse {
+  total: number;
+  matched: number;
+  cmdb_only: number;
+  with_diff: number;
+  vcpu_diff_count: number;
+  vram_diff_count: number;
+  cluster_diff_count: number;
+  items: CmdbVcenterDiffItem[];
   synced_at: string | null;
 }
 
@@ -311,6 +480,128 @@ export interface CmdbStatsResponse {
   days: CmdbDayStats[];
   current_totals: Record<string, number>;
   synced_at: string | null;
+}
+
+// ── VM Uptime ─────────────────────────────────────────────────────────────────
+
+export interface UptimeItem {
+  name: string;
+  power_state: string;
+  boot_time: string | null;
+  uptime_days: number | null;
+  cluster: string | null;
+}
+
+export interface UptimeResponse {
+  total: number;
+  powered_on: number;
+  powered_off: number;
+  long_running: number;
+  items: UptimeItem[];
+  synced_at: string | null;
+}
+
+// ── Decommission Candidates ───────────────────────────────────────────────────
+
+export interface DecommissionItem {
+  name: string;
+  power_state: string;
+  cmdb_status: string | null;
+  in_zabbix: boolean;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+  decommission_score: number;
+  reasons: string[];
+}
+
+export interface DecommissionResponse {
+  total: number;
+  items: DecommissionItem[];
+  synced_at: string | null;
+}
+
+// ── Decommissioned CIs ────────────────────────────────────────────────────────
+
+export interface DecommissionedCIItem {
+  name: string;
+  ci_type: "vm" | "physical";
+  cmdb_status: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+  os_family: string | null;
+  cluster: string | null;
+  power_state: string;
+  in_zabbix: boolean;
+  jira_updated: string | null;
+}
+
+export interface DecommissionedResponse {
+  total_vms: number;
+  total_physical: number;
+  items: DecommissionedCIItem[];
+  synced_at: string | null;
+}
+
+// ── Monitoring Coverage ───────────────────────────────────────────────────────
+
+export interface CoveragePoint {
+  date: string;
+  vm_total: number;
+  vm_monitored: number;
+  vm_pct: number;
+  phys_total: number;
+  phys_monitored: number;
+  phys_pct: number;
+}
+
+export interface CoverageResponse {
+  current_vm_pct: number | null;
+  current_phys_pct: number | null;
+  vm_total: number;
+  vm_monitored: number;
+  phys_total: number;
+  phys_monitored: number;
+  history: CoveragePoint[];
+  synced_at: string | null;
+}
+
+export interface CapacityClusterItem {
+  name: string;
+  host_count: number;
+  physical_cpu_cores: number | null;
+  physical_ram_gb: number | null;
+  host_cpu_pct: number | null;
+  host_ram_pct: number | null;
+  allocated_vcpu: number;
+  allocated_vram_gb: number;
+  total_vms: number;
+  powered_on_vms: number;
+  vcpu_ratio: number | null;
+  vram_ratio: number | null;
+  avg_cpu_pct: number | null;
+  avg_ram_pct: number | null;
+  peak_cpu_pct: number | null;
+  peak_ram_pct: number | null;
+  free_cpu_cores: number | null;
+  free_ram_gb: number | null;
+  std_vms_can_fit: number | null;
+  total_storage_gb: number | null;
+  free_storage_gb: number | null;
+  storage_used_pct: number | null;
+  status: "ok" | "warning" | "critical" | "unknown";
+}
+
+export interface CapacityResponse {
+  total_clusters: number;
+  total_physical_cpu_cores: number;
+  total_physical_ram_gb: number;
+  total_storage_gb: number;
+  critical_count: number;
+  warning_count: number;
+  items: CapacityClusterItem[];
+  synced_at: string | null;
+  period_days: number;
 }
 
 export interface ZabbixProblemItem {
@@ -352,6 +643,42 @@ export interface ZabbixProblemsResponse {
   fetched_at: string;
 }
 
+// ── Zombie Servers ────────────────────────────────────────────────────────────
+
+export type ZombieSignal = "low_cpu" | "low_ram" | "no_zabbix" | "no_metrics" | "wasted_alloc";
+
+export interface ZombieServerItem {
+  name: string;
+  fqdn: string | null;
+  primary_ip: string | null;
+  cluster: string | null;
+  os_family: string | null;
+  vcpu: number | null;
+  vram_gb: number | null;
+  power_state: string;
+  avg_cpu_pct: number | null;
+  max_cpu_pct: number | null;
+  avg_ram_pct: number | null;
+  max_ram_pct: number | null;
+  data_coverage_pct: number | null;
+  in_zabbix: boolean;
+  in_vcenter: boolean;
+  zombie_score: number;
+  signals: ZombieSignal[];
+}
+
+export interface ZombieServerResponse {
+  total: number;
+  score5: number;
+  score4: number;
+  score3: number;
+  score2: number;
+  score1: number;
+  items: ZombieServerItem[];
+  synced_at: string | null;
+  period_days: number;
+}
+
 export const api = {
   comparison: () => apiFetch<ComparisonResponse>("/api/comparison"),
   resources: (days?: number) =>
@@ -386,8 +713,29 @@ export const api = {
   vcenterSnapshots: () => apiFetch<VCenterSnapshotsResponse>("/api/vcenter/snapshots"),
   refreshSnapshots: () => apiPost<VCenterSnapshotsResponse>("/api/vcenter/snapshots/refresh"),
   osReport: () => apiFetch<OsReportResponse>("/api/os-report"),
+  osProgress: () => apiFetch<OsProgressResponse>("/api/os-progress"),
+  setOsBaseline: (label?: string) =>
+    apiPost<{ taken_at: string; total: number }>(
+      `/api/os-progress/baseline${label ? `?label=${encodeURIComponent(label)}` : ""}`
+    ),
   cmdbStats: (days?: number) =>
     apiFetch<CmdbStatsResponse>(`/api/cmdb-stats${days ? `?days=${days}` : ""}`),
+  uptime: () => apiFetch<UptimeResponse>("/api/uptime"),
+  decommissionCandidates: () => apiFetch<DecommissionResponse>("/api/decommission-candidates"),
+  decommissioned: () => apiFetch<DecommissionedResponse>("/api/decommissioned"),
+  monitoringCoverage: (days?: number) =>
+    apiFetch<CoverageResponse>(`/api/monitoring-coverage${days ? `?days=${days}` : ""}`),
+  capacity: (days?: number) =>
+    apiFetch<CapacityResponse>(`/api/capacity${days ? `?period_days=${days}` : ""}`),
+  securityDashboard: () => apiFetch<SecurityDashboardResponse>("/api/security-dashboard"),
+  vmChanges: (days?: number) =>
+    apiFetch<VmChangesResponse>(`/api/vm-changes${days ? `?days=${days}` : ""}`),
+  topology: () => apiFetch<TopologyResponse>("/api/topology"),
+  cmdbVcenterDiff: () => apiFetch<CmdbVcenterDiffResponse>("/api/cmdb-vcenter-diff"),
+  zombieServers: (days?: number, minScore?: number) =>
+    apiFetch<ZombieServerResponse>(
+      `/api/zombie-servers?period_days=${days ?? 90}&min_score=${minScore ?? 1}`
+    ),
   zabbixProblems: (dateFrom?: string, dateTill?: string) => {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);

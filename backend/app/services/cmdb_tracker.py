@@ -137,3 +137,46 @@ def get_current_totals() -> dict[str, int]:
             "SELECT ci_type, COUNT(*) FROM cmdb_ci_snapshot GROUP BY ci_type"
         ).fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+def record_coverage(
+    vm_total: int,
+    vm_monitored: int,
+    phys_total: int,
+    phys_monitored: int,
+) -> None:
+    """Upsert today's monitoring coverage snapshot (called after each metadata sync)."""
+    today = date.today().isoformat()
+    with db._connect() as conn:
+        conn.execute(
+            "INSERT INTO monitoring_coverage_history "
+            "(date, vm_total, vm_monitored, phys_total, phys_monitored) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(date) DO UPDATE SET "
+            "vm_total = excluded.vm_total, vm_monitored = excluded.vm_monitored, "
+            "phys_total = excluded.phys_total, phys_monitored = excluded.phys_monitored",
+            (today, vm_total, vm_monitored, phys_total, phys_monitored),
+        )
+        conn.commit()
+
+
+def get_coverage_history(days: int = 90) -> list[dict]:
+    """Return monitoring coverage history, newest first."""
+    from datetime import timedelta
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    with db._connect() as conn:
+        rows = conn.execute(
+            "SELECT date, vm_total, vm_monitored, phys_total, phys_monitored "
+            "FROM monitoring_coverage_history WHERE date >= ? ORDER BY date DESC",
+            (cutoff,),
+        ).fetchall()
+    return [
+        {
+            "date": r[0],
+            "vm_total": r[1],
+            "vm_monitored": r[2],
+            "phys_total": r[3],
+            "phys_monitored": r[4],
+        }
+        for r in rows
+    ]

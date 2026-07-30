@@ -20,7 +20,8 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from app.services import analyzer, cmdb_tracker, db, jira_client, metrics_store, vcenter_client, zabbix_client
+from app.config import settings
+from app.services import analyzer, cmdb_tracker, db, jira_client, metrics_store, response_cache, vcenter_client, zabbix_client
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +39,65 @@ _VC_INCREMENTAL_DAYS = 2
 # Between metadata refreshes, only Zabbix metric_hourly is updated (fast).
 _METADATA_TTL_SECONDS = 12 * 3600
 
+_DECOMMISSIONED_STATUSES = {
+    "Decommissioned", "decommissioned", "Decommisioned",  # common spellings
+    "Виведено з експлуатації", "Retired", "retired",
+    "Disposed", "disposed",
+}
+
 _in_progress = False
+
+_TRACKED_VM_FIELDS = ("vcpu", "vram_gb", "cluster", "status", "os_family")
+
+
+def _track_vm_config_changes(vms: list[dict]) -> None:
+    """Compare active VMs with the stored snapshot; write any field-level diffs."""
+    now_ts = int(time.time())
+    with db._connect() as conn:
+        snapshot: dict[str, dict] = {
+            row[0]: dict(zip(_TRACKED_VM_FIELDS, row[1:]))
+            for row in conn.execute(
+                "SELECT name, vcpu, vram_gb, cluster, status, os_family FROM vm_config_snapshot"
+            ).fetchall()
+        }
+        current_names = {vm["name"] for vm in vms if vm.get("name")}
+        changes: list[tuple] = []
+        for vm in vms:
+            name = vm.get("name")
+            if not name:
+                continue
+            if name not in snapshot:
+                if snapshot:  # skip "added" flood on very first sync
+                    changes.append((name, "added", None, None, now_ts))
+            else:
+                prev = snapshot[name]
+                for field in _TRACKED_VM_FIELDS:
+                    old_s = str(prev[field]) if prev.get(field) is not None else None
+                    new_s = str(vm[field]) if vm.get(field) is not None else None
+                    if old_s != new_s:
+                        changes.append((name, field, old_s, new_s, now_ts))
+        for name in snapshot:
+            if name not in current_names:
+                changes.append((name, "removed", None, None, now_ts))
+        if changes:
+            conn.executemany(
+                "INSERT INTO vm_config_changes (name, change_type, old_value, new_value, detected_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                changes,
+            )
+        conn.execute("DELETE FROM vm_config_snapshot")
+        conn.executemany(
+            "INSERT INTO vm_config_snapshot (name, vcpu, vram_gb, cluster, status, os_family, seen_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (vm.get("name"), vm.get("vcpu"), vm.get("vram_gb"),
+                 vm.get("cluster"), vm.get("status"), vm.get("os_family"), now_ts)
+                for vm in vms if vm.get("name")
+            ],
+        )
+        conn.commit()
+    if changes:
+        log.info("VM config changes recorded: %d events", len(changes))
 
 
 def _metadata_age_seconds() -> float:
@@ -285,13 +344,25 @@ async def sync_all(force_metadata: bool = False) -> dict:
         do_metadata = force_metadata or age > _METADATA_TTL_SECONDS
 
         if do_metadata:
-            vms, clusters, zabbix_hosts, vcenter_vms, vcenter_hosts, physical_servers = await asyncio.gather(
+            (
+                vms, clusters, zabbix_hosts, vcenter_vms, vcenter_hosts, vcenter_cluster_storage,
+                physical_servers,
+                ci_applications, ci_it_services, ci_db_instances, ci_storage,
+                ci_network_devices, ci_pbx,
+            ) = await asyncio.gather(
                 jira_client.get_all_vms(),
                 jira_client.get_all_clusters(),
                 zabbix_client.get_all_hosts(),
                 vcenter_client.list_vms(),
                 vcenter_client.list_hosts(),
+                vcenter_client.list_cluster_storage(),
                 jira_client.get_all_physical_servers(),
+                jira_client.get_objects_minimal([settings.jira_application_type_id]),
+                jira_client.get_objects_minimal([settings.jira_it_service_type_id]),
+                jira_client.get_objects_minimal([settings.jira_db_instance_type_id]),
+                jira_client.get_objects_minimal([settings.jira_storage_type_id]),
+                jira_client.get_objects_minimal(settings.network_device_type_id_list()),
+                jira_client.get_objects_minimal(settings.pbx_type_id_list()),
             )
 
             zabbix_index = analyzer.build_zabbix_index(zabbix_hosts)
@@ -328,12 +399,37 @@ async def sync_all(force_metadata: bool = False) -> dict:
             if vcenter_hosts and vm_host_map:
                 vms = _enrich_vm_clusters(vms, vm_host_map, vcenter_hosts)
 
-            # Track CMDB changes vs previous snapshot
-            cmdb_tracker.update("vm",       vms)
-            cmdb_tracker.update("physical", physical_servers)
-            cmdb_tracker.update("cluster",  clusters)
+            # Split by decommissioned status — decommissioned CIs are stored separately
+            # and excluded from all standard reports
+            active_vms   = [v for v in vms             if v.get("status") not in _DECOMMISSIONED_STATUSES]
+            decomm_vms   = [v for v in vms             if v.get("status") in _DECOMMISSIONED_STATUSES]
+            active_phys  = [p for p in physical_servers if p.get("status") not in _DECOMMISSIONED_STATUSES]
+            decomm_phys  = [p for p in physical_servers if p.get("status") in _DECOMMISSIONED_STATUSES]
 
-            db.set("vms", vms)
+            # Track CMDB changes vs previous snapshot (ALL CIs, including decommissioned)
+            cmdb_tracker.update("vm",             vms)
+            cmdb_tracker.update("physical",       physical_servers)
+            cmdb_tracker.update("cluster",        clusters)
+            cmdb_tracker.update("application",    ci_applications)
+            cmdb_tracker.update("it_service",     ci_it_services)
+            cmdb_tracker.update("db_instance",    ci_db_instances)
+            cmdb_tracker.update("storage",        ci_storage)
+            cmdb_tracker.update("network_device", ci_network_devices)
+            cmdb_tracker.update("pbx",            ci_pbx)
+
+            # Coverage tracks only active CIs (decommissioned don't need monitoring)
+            active_vm_names   = {v["name"] for v in active_vms}
+            active_phys_names = {p["name"] for p in active_phys}
+            cmdb_tracker.record_coverage(
+                vm_total=len(active_vms),
+                vm_monitored=sum(1 for n in vm_hostids if n in active_vm_names),
+                phys_total=len(active_phys),
+                phys_monitored=sum(1 for n in phys_hostids if n in active_phys_names),
+            )
+
+            db.set("vms", active_vms)
+            _track_vm_config_changes(active_vms)
+            db.set("decommissioned_vms", decomm_vms)
             db.set("clusters", clusters)
             db.set("zabbix_hosts", zabbix_hosts)
             db.set("vm_hostid_map", vm_hostids)
@@ -348,15 +444,21 @@ async def sync_all(force_metadata: bool = False) -> dict:
                 db.set("vcenter_hosts", vcenter_hosts)
             else:
                 log.warning("vCenter list_hosts returned empty — keeping previous vcenter_hosts in cache")
-            db.set("physical_servers", physical_servers)
+            if vcenter_cluster_storage:
+                db.set("vcenter_cluster_storage", vcenter_cluster_storage)
+            else:
+                log.warning("vCenter list_cluster_storage returned empty — keeping previous in cache")
+            db.set("physical_servers", active_phys)
+            db.set("decommissioned_physical_servers", decomm_phys)
             db.set("phys_hostid_map", phys_hostids)
 
             log.info(
-                "Metadata refresh: %d VMs, %d clusters, %d Zabbix hosts, "
-                "%d VM→Zabbix, %d VM→vCenter, %d vCenter hosts, %d VM→host, %d phys, %d phys→Zabbix",
-                len(vms), len(clusters), len(zabbix_hosts),
+                "Metadata refresh: %d VMs (%d decomm), %d clusters, %d Zabbix hosts, "
+                "%d VM→Zabbix, %d VM→vCenter, %d vCenter hosts, %d VM→host, "
+                "%d phys (%d decomm), %d phys→Zabbix, %d VC cluster storage",
+                len(active_vms), len(decomm_vms), len(clusters), len(zabbix_hosts),
                 len(vm_hostids), len(vm_moids), len(vcenter_hosts), len(vm_host_map),
-                len(physical_servers), len(phys_hostids),
+                len(active_phys), len(decomm_phys), len(phys_hostids), len(vcenter_cluster_storage),
             )
         else:
             # Cache hit — skip all Jira/Zabbix/vCenter inventory calls.
@@ -384,6 +486,7 @@ async def sync_all(force_metadata: bool = False) -> dict:
             "Sync done: metadata_refreshed=%s, %d Zabbix hosts, %d vCenter VMs",
             do_metadata, len(all_hostids), len(vm_moids),
         )
+        response_cache.clear()
         return {
             "status": "ok",
             "metadata_refreshed": do_metadata,

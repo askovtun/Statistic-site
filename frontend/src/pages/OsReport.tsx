@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, type OsServerItem, type OsSummaryItem, type OsStatus } from "../api/client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type OsProgressItem, type OsServerItem, type OsSummaryItem, type OsStatus, type OsUpgradedServerItem } from "../api/client";
 import { exportToXlsx } from "../utils/exportXlsx";
 import Pagination from "../components/Pagination";
 
@@ -586,9 +586,572 @@ function ServersTab({ items }: { items: OsServerItem[] }) {
   );
 }
 
+// ── Progress tab ──────────────────────────────────────────────────────────────
+
+function DeltaChip({ delta, invertColor = false }: { delta: number | null; invertColor?: boolean }) {
+  if (delta === null) return <span className="text-gray-300 text-xs">—</span>;
+  if (delta === 0) return <span className="text-gray-400 text-xs font-mono">±0</span>;
+
+  // invertColor=true means "negative delta is good" (eol_delta < 0 = fewer EOL = green)
+  const isGood = invertColor ? delta < 0 : delta > 0;
+  const color = isGood ? "text-green-700 bg-green-50" : "text-red-700 bg-red-50";
+  const sign = delta > 0 ? "+" : "";
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-mono font-semibold ${color}`}>
+      {sign}{delta}
+    </span>
+  );
+}
+
+function ProgressBar({ value, max, color }: { value: number; max: number; color: string }) {
+  if (max === 0) return null;
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
+    </div>
+  );
+}
+
+// ── Upgraded servers panel ────────────────────────────────────────────────────
+
+const UPGRADE_ARROW: Record<OsStatus, string> = {
+  eol:         "bg-red-100 text-red-700",
+  ending_soon: "bg-amber-100 text-amber-700",
+  supported:   "bg-green-100 text-green-700",
+  unknown:     "bg-gray-100 text-gray-500",
+};
+
+function UpgradedServersPanel({ servers }: { servers: OsUpgradedServerItem[] }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  if (servers.length === 0) {
+    return (
+      <div className="mb-5 p-4 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-500">
+        Оновлених серверів не виявлено — або бейслайн містить лише підсумки (збережіть новий бейслайн для порівняння на рівні серверів).
+      </div>
+    );
+  }
+
+  const filtered = search
+    ? servers.filter((s) => {
+        const q = search.toLowerCase();
+        return (
+          s.name.toLowerCase().includes(q) ||
+          (s.os_product ?? "").toLowerCase().includes(q) ||
+          (s.cluster ?? "").toLowerCase().includes(q)
+        );
+      })
+    : servers;
+
+  // Group by upgrade direction for summary
+  const byDirection = servers.reduce<Record<string, number>>((acc, s) => {
+    const key = `${s.old_status}→${s.new_status}`;
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  return (
+    <div className="mb-5 border border-green-200 rounded-xl overflow-hidden">
+      {/* Header */}
+      <button
+        className="w-full flex items-center justify-between px-4 py-3 bg-green-50 hover:bg-green-100 transition text-left"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-green-700 font-semibold text-sm">
+            Оновлені сервери
+          </span>
+          <span className="inline-block px-2 py-0.5 rounded-full bg-green-600 text-white text-xs font-bold">
+            {servers.length}
+          </span>
+          {/* Direction chips */}
+          <div className="hidden sm:flex flex-wrap gap-1">
+            {Object.entries(byDirection).map(([dir, cnt]) => {
+              const [from, to] = dir.split("→") as [OsStatus, OsStatus];
+              return (
+                <span key={dir} className="flex items-center gap-1 text-xs bg-white border border-green-200 rounded-full px-2 py-0.5">
+                  <span className={`px-1 rounded ${UPGRADE_ARROW[from]}`}>{STATUS_LABEL[from]}</span>
+                  <span className="text-gray-400">→</span>
+                  <span className={`px-1 rounded ${UPGRADE_ARROW[to]}`}>{STATUS_LABEL[to]}</span>
+                  <span className="font-semibold text-gray-600 ml-0.5">{cnt}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+        <span className="text-gray-400 text-xs select-none">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {/* Expanded table */}
+      {open && (
+        <div className="bg-white">
+          <div className="px-4 py-2 border-b border-gray-100">
+            <input
+              type="text"
+              placeholder="Пошук за назвою, ОС, кластером..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full max-w-sm px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:border-blue-400"
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+                <tr>
+                  <th className="px-4 py-2 text-left">Сервер</th>
+                  <th className="px-4 py-2 text-left">Операційна система</th>
+                  <th className="px-4 py-2 text-left">Кластер</th>
+                  <th className="px-4 py-2 text-left">Статус до</th>
+                  <th className="px-4 py-2 text-left">Статус після</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filtered.map((srv) => (
+                  <tr key={srv.name} className="hover:bg-green-50 transition-colors">
+                    <td className="px-4 py-2 font-medium text-gray-800 whitespace-nowrap">
+                      {srv.name}
+                      {srv.fqdn && <div className="text-xs text-gray-400 font-normal">{srv.fqdn}</div>}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-600">
+                      {srv.os_product ?? (srv.os_raw?.replace(/^OS-/, "") ?? "—")}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-500">{srv.cluster ?? "—"}</td>
+                    <td className="px-4 py-2">
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[srv.old_status]}`}>
+                        {STATUS_LABEL[srv.old_status]}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[srv.new_status]}`}>
+                        {STATUS_LABEL[srv.new_status]}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {filtered.length === 0 && (
+            <p className="text-center py-4 text-gray-400 text-sm">Нічого не знайдено</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProgressTab({ allServers }: { allServers: OsServerItem[] }) {
+  const queryClient = useQueryClient();
+  const [labelInput, setLabelInput] = useState("");
+  const [showLabelInput, setShowLabelInput] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<OsStatus | "all">("all");
+  const [search, setSearch] = useState("");
+
+  // Map: os_product+status → servers (or os_raw if no product).
+  // Mirrors the grouping key used in the backend get_os_report().
+  const serversByKey = useMemo<Map<string, OsServerItem[]>>(() => {
+    const map = new Map<string, OsServerItem[]>();
+    for (const srv of allServers) {
+      if (srv.os_raw == null) continue;
+      const k = srv.os_product
+        ? `${srv.os_product}|${srv.os_status}|${srv.eol_date ?? ""}`
+        : srv.os_raw;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(srv);
+    }
+    return map;
+  }, [allServers]);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["osProgress"],
+    queryFn: api.osProgress,
+  });
+
+  const mutation = useMutation({
+    mutationFn: () => api.setOsBaseline(labelInput.trim() || undefined),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["osProgress"] });
+      setShowLabelInput(false);
+      setLabelInput("");
+    },
+  });
+
+  if (isLoading) return <div className="text-gray-400 py-8 text-center">Завантаження...</div>;
+  if (error) return <div className="text-red-500 py-8 text-center text-sm">Помилка завантаження: {String(error)}</div>;
+  if (!data) return <div className="text-gray-400 py-8 text-center">Немає даних</div>;
+
+  const hasBaseline = data.baseline_taken_at != null;
+
+  // Filtered + searched items
+  const filteredItems = (data.items ?? []).filter((item) => {
+    if (statusFilter !== "all" && item.current_status !== statusFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return (
+        item.os_raw.toLowerCase().includes(q) ||
+        (item.os_product ?? "").toLowerCase().includes(q) ||
+        (item.os_vendor ?? "").toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  const baselineDate = hasBaseline
+    ? new Date(data.baseline_taken_at!).toLocaleDateString("uk-UA", { day: "numeric", month: "long", year: "numeric" })
+    : null;
+  const daysAgo = hasBaseline
+    ? Math.floor((Date.now() - new Date(data.baseline_taken_at!).getTime()) / 86400000)
+    : null;
+
+  // "Upgrade progress": how many servers moved from (eol+ending_soon) to supported
+  const problematicReduced =
+    data.eol_delta !== null && data.ending_soon_delta !== null
+      ? -(data.eol_delta + data.ending_soon_delta)
+      : null;
+
+  return (
+    <>
+      {/* Baseline info / set baseline */}
+      {hasBaseline ? (
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-5 p-4 bg-blue-50 border border-blue-100 rounded-xl">
+          <div>
+            <p className="text-sm font-semibold text-blue-800">
+              Базова лінія зафіксована: {baselineDate}
+              {daysAgo !== null && (
+                <span className="ml-2 font-normal text-blue-600">({daysAgo} дн. тому)</span>
+              )}
+              {data.baseline_label && (
+                <span className="ml-2 text-blue-500 italic">· {data.baseline_label}</span>
+              )}
+            </p>
+            <p className="text-xs text-blue-600 mt-0.5">
+              Стан на той момент: {data.baseline_total} серверів · EOL {data.baseline_eol} · Закінчується {data.baseline_ending_soon} · Підтримується {data.baseline_supported}
+            </p>
+          </div>
+          {!showLabelInput ? (
+            <button
+              onClick={() => setShowLabelInput(true)}
+              className="text-xs text-blue-600 underline hover:text-blue-800 shrink-0"
+            >
+              Оновити базову лінію
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                type="text"
+                placeholder="Мітка (необов'язково)"
+                value={labelInput}
+                onChange={(e) => setLabelInput(e.target.value)}
+                className="border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+              />
+              <button
+                onClick={() => mutation.mutate()}
+                disabled={mutation.isPending}
+                className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {mutation.isPending ? "..." : "Зберегти"}
+              </button>
+              <button onClick={() => setShowLabelInput(false)} className="text-xs text-gray-500 hover:text-gray-700">
+                Скасувати
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mb-5 p-5 bg-amber-50 border border-amber-200 rounded-xl">
+          <p className="text-sm font-semibold text-amber-800 mb-1">Базову лінію не зафіксовано</p>
+          <p className="text-xs text-amber-700 mb-3">
+            Збережіть поточний стан як базову лінію, щоб надалі відстежувати прогрес оновлення операційних систем.
+          </p>
+          {!showLabelInput ? (
+            <button
+              onClick={() => setShowLabelInput(true)}
+              className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700"
+            >
+              Зафіксувати базову лінію зараз
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="text"
+                placeholder="Мітка (наприклад: Початок Q3 2026)"
+                value={labelInput}
+                onChange={(e) => setLabelInput(e.target.value)}
+                className="border border-amber-300 rounded px-3 py-2 text-sm focus:outline-none focus:border-amber-500 min-w-[260px]"
+              />
+              <button
+                onClick={() => mutation.mutate()}
+                disabled={mutation.isPending}
+                className="px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+              >
+                {mutation.isPending ? "Збереження..." : "Зберегти"}
+              </button>
+              <button onClick={() => setShowLabelInput(false)} className="text-xs text-gray-500 hover:text-gray-700">
+                Скасувати
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Progress summary cards */}
+      {hasBaseline && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+          {/* EOL */}
+          <div className="bg-white border border-gray-200 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-gray-500">EOL серверів</span>
+              <DeltaChip delta={data.eol_delta} invertColor />
+            </div>
+            <p className="text-2xl font-bold text-red-600">{data.current_eol}</p>
+            {data.baseline_eol !== null && (
+              <p className="text-xs text-gray-400 mt-0.5">було: {data.baseline_eol}</p>
+            )}
+            <ProgressBar
+              value={data.baseline_eol! - data.current_eol}
+              max={data.baseline_eol!}
+              color="bg-green-500"
+            />
+          </div>
+
+          {/* Ending soon */}
+          <div className="bg-white border border-gray-200 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-gray-500">Закінчується</span>
+              <DeltaChip delta={data.ending_soon_delta} invertColor />
+            </div>
+            <p className="text-2xl font-bold text-amber-600">{data.current_ending_soon}</p>
+            {data.baseline_ending_soon !== null && (
+              <p className="text-xs text-gray-400 mt-0.5">було: {data.baseline_ending_soon}</p>
+            )}
+          </div>
+
+          {/* Supported */}
+          <div className="bg-white border border-gray-200 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-gray-500">Підтримується</span>
+              <DeltaChip delta={data.supported_delta} />
+            </div>
+            <p className="text-2xl font-bold text-green-600">{data.current_supported}</p>
+            {data.baseline_supported !== null && (
+              <p className="text-xs text-gray-400 mt-0.5">було: {data.baseline_supported}</p>
+            )}
+          </div>
+
+          {/* Overall progress */}
+          <div className="bg-white border border-blue-200 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-gray-500">Знято з EOL/закінч.</span>
+              {problematicReduced !== null && problematicReduced > 0 && (
+                <span className="text-xs font-semibold text-green-600">+{problematicReduced}</span>
+              )}
+            </div>
+            <p className={`text-2xl font-bold ${(problematicReduced ?? 0) > 0 ? "text-green-700" : "text-gray-600"}`}>
+              {problematicReduced ?? "—"}
+            </p>
+            {data.baseline_eol !== null && data.baseline_ending_soon !== null && (
+              <>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  із {data.baseline_eol + data.baseline_ending_soon}
+                </p>
+                <ProgressBar
+                  value={problematicReduced ?? 0}
+                  max={data.baseline_eol + data.baseline_ending_soon}
+                  color="bg-blue-500"
+                />
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Upgraded servers — only when baseline is set */}
+      {hasBaseline && (
+        <UpgradedServersPanel servers={data.upgraded_servers ?? []} />
+      )}
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        {(["all", "eol", "ending_soon", "supported", "unknown"] as const).map((s) => {
+          const label = s === "all" ? "Всі" : STATUS_LABEL[s];
+          const active = statusFilter === s;
+          return (
+            <button
+              key={s}
+              onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                active
+                  ? s === "all" ? "bg-gray-700 text-white border-gray-700" : `${STATUS_COLORS[s]} border-current`
+                  : "bg-white text-gray-600 border-gray-300 hover:border-gray-400"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+        <input
+          type="text"
+          placeholder="Пошук за ОС..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="ml-auto w-full max-w-xs px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:border-blue-400"
+        />
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+              <tr>
+                <th className="px-2 py-3 w-6" />
+                <th className="px-4 py-3 text-left">Операційна система</th>
+                <th className="px-4 py-3 text-left">Вендор</th>
+                <th className="px-4 py-3 text-left">Статус зараз</th>
+                {hasBaseline && <th className="px-4 py-3 text-left">Статус до</th>}
+                {hasBaseline && <th className="px-4 py-3 text-right">Було</th>}
+                <th className="px-4 py-3 text-right">Зараз</th>
+                {hasBaseline && <th className="px-4 py-3 text-right">Зміна</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredItems.map((item) => {
+                const k = item.os_product
+                  ? `${item.os_product}|${item.current_status}|${item.eol_date ?? ""}`
+                  : item.os_raw;
+                const servers = serversByKey.get(k) ?? [];
+                return (
+                  <ProgressRow
+                    key={item.os_raw}
+                    item={item}
+                    hasBaseline={hasBaseline}
+                    servers={servers}
+                  />
+                );
+              })}
+              {filteredItems.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-6 py-8 text-center text-gray-400">
+                    Нічого не знайдено
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ProgressRow({
+  item,
+  hasBaseline,
+  servers,
+}: {
+  item: OsProgressItem;
+  hasBaseline: boolean;
+  servers: OsServerItem[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const rowBg = ROW_BG[item.current_status] ?? "";
+  const showImproved = hasBaseline && item.baseline_status != null &&
+    item.current_status !== item.baseline_status &&
+    (STATUS_ORDER[item.baseline_status] ?? 4) > (STATUS_ORDER[item.current_status] ?? 4);
+
+  const colCount = 3 + (hasBaseline ? 3 : 0) + 1; // +1 for expand toggle
+
+  return (
+    <>
+      <tr
+        className={`transition-colors cursor-pointer ${showImproved ? "bg-green-50 hover:bg-green-100" : rowBg}`}
+        onClick={() => servers.length > 0 && setExpanded((e) => !e)}
+      >
+        {/* Expand toggle */}
+        <td className="px-2 py-2.5 text-center w-6">
+          {servers.length > 0 ? (
+            <span className="text-gray-400 hover:text-blue-600 text-xs font-bold select-none">
+              {expanded ? "▲" : "▼"}
+            </span>
+          ) : null}
+        </td>
+
+        <td className="px-4 py-2.5">
+          <div className="font-medium text-gray-800">
+            {item.os_product ?? item.os_raw.replace(/^OS-/, "")}
+            {showImproved && (
+              <span className="ml-2 inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-100 text-green-700 leading-none">
+                оновлено
+              </span>
+            )}
+          </div>
+          {item.os_product && (
+            <div className="text-xs text-gray-400 mt-0.5">{item.os_raw.replace(/^OS-/, "")}</div>
+          )}
+        </td>
+        <td className="px-4 py-2.5 text-xs text-gray-500">{item.os_vendor ?? "—"}</td>
+        <td className="px-4 py-2.5">
+          <StatusBadge status={item.current_status} />
+        </td>
+        {hasBaseline && (
+          <td className="px-4 py-2.5">
+            {item.baseline_status ? (
+              <StatusBadge status={item.baseline_status} />
+            ) : (
+              <span className="text-xs text-blue-600 font-medium">нова</span>
+            )}
+          </td>
+        )}
+        {hasBaseline && (
+          <td className="px-4 py-2.5 text-right">
+            <span className="text-sm text-gray-500">{item.baseline_count ?? "—"}</span>
+          </td>
+        )}
+        <td className="px-4 py-2.5 text-right">
+          <span className="text-sm font-semibold text-gray-700">{item.current_count}</span>
+        </td>
+        {hasBaseline && (
+          <td className="px-4 py-2.5 text-right">
+            <DeltaChip
+              delta={item.delta}
+              invertColor={item.current_status === "eol" || item.current_status === "ending_soon"}
+            />
+          </td>
+        )}
+      </tr>
+
+      {/* Expanded server sub-rows */}
+      {expanded && servers.map((srv) => (
+        <tr
+          key={`${item.os_raw}::${srv.name}`}
+          className="bg-gray-50 border-l-4 border-blue-200 text-xs text-gray-600"
+        >
+          <td colSpan={2} />
+          <td className="px-4 py-1.5 font-medium text-gray-700 whitespace-nowrap">
+            {srv.name}
+            {srv.fqdn && <span className="ml-2 text-gray-400 font-normal">{srv.fqdn}</span>}
+            {srv.ci_type === "vm" && <SourceBadge fromTools={srv.os_from_tools} />}
+          </td>
+          <td className="px-4 py-1.5 text-gray-400">{srv.primary_ip ?? "—"}</td>
+          <td className="px-4 py-1.5">
+            <span className="text-xs text-gray-400">{srv.ci_type === "vm" ? "VM" : "Фіз."}</span>
+          </td>
+          <td className="px-4 py-1.5 text-gray-500">{srv.cluster ?? "—"}</td>
+          <td colSpan={colCount - 5} />
+        </tr>
+      ))}
+    </>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type Tab = "os-types" | "servers";
+type Tab = "os-types" | "servers" | "progress";
 
 export default function OsReport() {
   const { data, isLoading, error } = useQuery({
@@ -598,6 +1161,9 @@ export default function OsReport() {
 
   const [tab, setTab]                       = useState<Tab>("os-types");
   const [statusCardFilter, setStatusCardFilter] = useState<OsStatus | "all">("all");
+
+  // Status card filter does not apply to the progress tab (it has its own filters)
+  const isProgressTab = tab === "progress";
 
   const filteredServers = useMemo(
     () => (data?.servers ?? []).filter((s) => statusCardFilter === "all" || s.os_status === statusCardFilter),
@@ -626,8 +1192,8 @@ export default function OsReport() {
         Статус підтримки ОС на серверах: терміни EOL, перелік застарілих систем
       </p>
 
-      {/* Summary cards */}
-      {data && (
+      {/* Summary cards — hidden on progress tab (it has its own summary) */}
+      {data && !isProgressTab && (
         <div className="flex flex-wrap gap-3 mb-6">
           {cards.map(({ status, label, count, colorClass }) => (
             <button
@@ -647,8 +1213,9 @@ export default function OsReport() {
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-gray-200">
         {([
-          { key: "os-types", label: "За ОС" },
-          { key: "servers",  label: "За серверами" },
+          { key: "os-types",  label: "За ОС" },
+          { key: "servers",   label: "За серверами" },
+          { key: "progress",  label: "Прогрес оновлень" },
         ] as { key: Tab; label: string }[]).map(({ key, label }) => (
           <button
             key={key}
@@ -669,6 +1236,9 @@ export default function OsReport() {
       )}
       {tab === "servers" && (
         <ServersTab items={filteredServers} />
+      )}
+      {tab === "progress" && (
+        <ProgressTab allServers={data?.servers ?? []} />
       )}
     </div>
   );
