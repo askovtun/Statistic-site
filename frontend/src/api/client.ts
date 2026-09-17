@@ -1,19 +1,22 @@
 const BASE = import.meta.env.VITE_API_URL ?? "";
 
+const FETCH_OPTS: RequestInit = { credentials: "same-origin" };
+
 async function apiFetch<T>(path: string): Promise<T> {
-  const r = await fetch(`${BASE}${path}`);
+  const r = await fetch(`${BASE}${path}`, FETCH_OPTS);
   if (!r.ok) throw new Error(`API ${path} → ${r.status} ${r.statusText}`);
   return r.json() as Promise<T>;
 }
 
 async function apiPost<T>(path: string): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, { method: "POST" });
+  const r = await fetch(`${BASE}${path}`, { ...FETCH_OPTS, method: "POST" });
   if (!r.ok) throw new Error(`API ${path} → ${r.status} ${r.statusText}`);
   return r.json() as Promise<T>;
 }
 
 async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(`${BASE}${path}`, {
+    ...FETCH_OPTS,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
