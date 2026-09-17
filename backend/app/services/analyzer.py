@@ -517,8 +517,10 @@ def build_resources(
         zbx_disk_used_pct = (100.0 - disk_free) if disk_free is not None else None
         zbx_disk_used_max = (100.0 - disk_free_min) if disk_free_min is not None else None
 
-        eff_disk_used_pct = disk_used_pct if disk_used_pct is not None else zbx_disk_used_pct
-        eff_disk_used_max = disk_used_max if disk_used_max is not None else zbx_disk_used_max
+        # Zabbix reports real guest filesystem usage; vCenter disk_used_pct is
+        # committed/total (thin-prov ratio), which is not actual disk usage.
+        eff_disk_used_pct = zbx_disk_used_pct if zbx_disk_used_pct is not None else disk_used_pct
+        eff_disk_used_max = zbx_disk_used_max if zbx_disk_used_max is not None else disk_used_max
 
         status, recs, rec_vcpu, rec_vram = _resource_status_and_recommendations(
             cpu_pct, cpu_max, ram_pct, ram_max, vm.get("vcpu"), vm.get("vram_gb"),

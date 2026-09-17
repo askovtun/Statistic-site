@@ -13,6 +13,11 @@ from typing import Any
 
 _DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "cache.db"
 
+# In-memory mirror of the JSON KV store — avoids re-opening SQLite and
+# re-parsing JSON on every db.get() call. Populated lazily on first read;
+# updated synchronously on db.set(); survives process lifetime.
+_mem_cache: dict[str, tuple[Any, str]] = {}
+
 
 def _connect() -> sqlite3.Connection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -116,13 +121,17 @@ def _connect() -> sqlite3.Connection:
 
 def get(key: str) -> tuple[Any, str] | None:
     """Return (value, updated_at) for key, or None if not cached."""
+    if key in _mem_cache:
+        return _mem_cache[key]
     with _connect() as conn:
         row = conn.execute(
             "SELECT payload, updated_at FROM cache WHERE key = ?", (key,)
         ).fetchone()
     if row is None:
         return None
-    return json.loads(row[0]), row[1]
+    result: tuple[Any, str] = (json.loads(row[0]), row[1])
+    _mem_cache[key] = result
+    return result
 
 
 def set(key: str, value: Any) -> str:
@@ -135,4 +144,5 @@ def set(key: str, value: Any) -> str:
             (key, json.dumps(value), updated_at),
         )
         conn.commit()
+    _mem_cache[key] = (value, updated_at)
     return updated_at

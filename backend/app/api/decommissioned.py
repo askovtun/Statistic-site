@@ -4,13 +4,19 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.models.schemas import DecommissionedCIItem, DecommissionedResponse
-from app.services import db
+from app.services import db, response_cache
 
 router = APIRouter(tags=["decommissioned"])
+
+_CACHE_TTL = 300
 
 
 @router.get("/decommissioned", response_model=DecommissionedResponse)
 async def get_decommissioned() -> DecommissionedResponse:
+    cached = response_cache.get("decommissioned", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     decomm_vms_cached  = db.get("decommissioned_vms")
     decomm_phys_cached = db.get("decommissioned_physical_servers")
     vms_cached         = db.get("vms")  # for synced_at timestamp
@@ -67,9 +73,11 @@ async def get_decommissioned() -> DecommissionedResponse:
 
     items.sort(key=lambda x: (x.ci_type, x.name))
 
-    return DecommissionedResponse(
+    result = DecommissionedResponse(
         total_vms=len(decomm_vms),
         total_physical=len(decomm_phys),
         items=items,
         synced_at=synced_at,
     )
+    response_cache.put("decommissioned", result)
+    return result

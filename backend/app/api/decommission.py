@@ -10,15 +10,19 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.models.schemas import DecommissionItem, DecommissionResponse
-from app.services import db
+from app.services import db, response_cache
 
 router = APIRouter()
 
 _ACTIVE_STATUSES = {"Active", "Активний", "active"}
+_CACHE_TTL = 300
 
 
 @router.get("/decommission-candidates", response_model=DecommissionResponse)
 async def get_decommission_candidates() -> DecommissionResponse:
+    cached = response_cache.get("decommission-candidates", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
     vcenter_vms_cached  = db.get("vcenter_vms")
     vms_cached          = db.get("vms")
     moid_map_cached     = db.get("vm_moid_map")
@@ -85,8 +89,10 @@ async def get_decommission_candidates() -> DecommissionResponse:
 
     candidates.sort(key=lambda x: (-x.decommission_score, x.name))
 
-    return DecommissionResponse(
+    result = DecommissionResponse(
         total=len(candidates),
         items=candidates,
         synced_at=synced_at,
     )
+    response_cache.put("decommission-candidates", result)
+    return result

@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 * {
   box-sizing: border-box;
 }
@@ -12,4 +14,46 @@ body {
 
 #root {
   height: 100vh;
+}
+
+@media print {
+  aside,
+  header,
+  .no-print,
+  button[onClick],
+  nav {
+    display: none !important;
+  }
+
+  #root {
+    height: auto;
+    overflow: visible;
+  }
+
+  main {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  .flex.h-screen {
+    display: block;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  table {
+    page-break-inside: auto;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  .overflow-x-auto {
+    overflow: visible !important;
+  }
 }

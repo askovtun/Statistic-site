@@ -4,13 +4,19 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.models.schemas import SecurityDashboardResponse, SecurityServerItem
-from app.services import db, os_lifecycle
+from app.services import db, os_lifecycle, response_cache
 
 router = APIRouter(tags=["security"])
+
+_CACHE_TTL = 300
 
 
 @router.get("/security-dashboard", response_model=SecurityDashboardResponse)
 async def get_security_dashboard() -> SecurityDashboardResponse:
+    cached = response_cache.get("security-dashboard", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     vms_cached          = db.get("vms")
     phys_cached         = db.get("physical_servers")
     vm_hostid_cached    = db.get("vm_hostid_map")
@@ -31,6 +37,8 @@ async def get_security_dashboard() -> SecurityDashboardResponse:
 
     eol_items: list[SecurityServerItem] = []
     ending_soon_items: list[SecurityServerItem] = []
+    unknown_os_items: list[SecurityServerItem] = []
+    no_version_items: list[SecurityServerItem] = []
 
     for vm in vms:
         name = vm.get("name", "")
@@ -43,26 +51,32 @@ async def get_security_dashboard() -> SecurityDashboardResponse:
         entry = os_lifecycle.match_os(os_raw)
         status, days = os_lifecycle.get_status(entry)
 
-        if status in ("eol", "ending_soon"):
-            item = SecurityServerItem(
-                name=name,
-                ci_type="vm",
-                cluster=vm.get("cluster"),
-                fqdn=vm.get("fqdn"),
-                primary_ip=vm.get("primary_ip"),
-                os_raw=os_raw,
-                os_product=entry["product"] if entry else None,
-                os_status=status,
-                eol_date=entry["eol_date"] if entry else None,
-                days_until_eol=days,
-            )
-            if status == "eol":
-                eol_items.append(item)
+        item = SecurityServerItem(
+            name=name,
+            ci_type="vm",
+            cluster=vm.get("cluster"),
+            fqdn=vm.get("fqdn"),
+            primary_ip=vm.get("primary_ip"),
+            os_raw=os_raw,
+            os_product=entry["product"] if entry else None,
+            os_status=status,
+            eol_date=entry["eol_date"] if entry else None,
+            days_until_eol=days,
+        )
+        if status == "eol":
+            eol_items.append(item)
+        elif status == "ending_soon":
+            ending_soon_items.append(item)
+        elif status == "unknown":
+            if os_lifecycle.is_known_brand(os_raw):
+                no_version_items.append(item)
             else:
-                ending_soon_items.append(item)
+                unknown_os_items.append(item)
 
     eol_items.sort(key=lambda x: (x.days_until_eol is None, x.days_until_eol or 0))
     ending_soon_items.sort(key=lambda x: (x.days_until_eol is None, x.days_until_eol or 0))
+    unknown_os_items.sort(key=lambda x: x.name)
+    no_version_items.sort(key=lambda x: x.name)
 
     monitored_vm_names   = set(vm_hostid_map.keys())
     monitored_phys_names = set(phys_hostid_map.keys())
@@ -90,14 +104,20 @@ async def get_security_dashboard() -> SecurityDashboardResponse:
         if s.get("name") and s["name"] not in monitored_phys_names
     ]
 
-    return SecurityDashboardResponse(
+    result = SecurityDashboardResponse(
         eol_count=len(eol_items),
         ending_soon_count=len(ending_soon_items),
         unmonitored_vm_count=len(unmonitored_vms),
         unmonitored_phys_count=len(unmonitored_phys),
+        unknown_os_count=len(unknown_os_items),
+        no_version_count=len(no_version_items),
         eol_items=eol_items,
         ending_soon_items=ending_soon_items,
         unmonitored_vms=unmonitored_vms,
         unmonitored_phys=unmonitored_phys,
+        unknown_os_items=unknown_os_items,
+        no_version_items=no_version_items,
         synced_at=synced_at,
     )
+    response_cache.put("security-dashboard", result)
+    return result

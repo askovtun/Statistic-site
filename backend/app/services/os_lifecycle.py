@@ -83,6 +83,20 @@ _LIFECYCLE: dict[str, OsEntry] = {
 # fmt: on
 
 
+_KNOWN_BRANDS = (
+    "ubuntu", "centos", "red hat", "rhel", "debian", "freebsd",
+    "photon", "suse", "sles", "oracle linux", "rocky", "almalinux", "alma linux",
+)
+
+
+def is_known_brand(os_raw: str | None) -> bool:
+    """True if os_raw contains a recognizable OS brand (but version may be unknown)."""
+    if not os_raw:
+        return False
+    n = os_raw.lower().removeprefix("os-").strip()
+    return any(brand in n for brand in _KNOWN_BRANDS)
+
+
 def _ver(name: str, v: str) -> bool:
     """True if version token v appears as a standalone word/token in name."""
     return bool(re.search(rf"(?<!\d){re.escape(v)}(?!\d)", name))

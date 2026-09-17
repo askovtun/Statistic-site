@@ -7,11 +7,12 @@ from app.models.schemas import (
     OsProgressItem, OsProgressResponse, OsUpgradedServerItem,
     OsReportResponse, OsServerItem, OsSummaryItem,
 )
-from app.services import db, os_lifecycle
+from app.services import db, os_lifecycle, response_cache
 
 router = APIRouter(tags=["os-report"])
 
 _STATUS_ORDER = {"eol": 0, "ending_soon": 1, "supported": 2, "unknown": 3}
+_CACHE_TTL = 300
 
 
 @router.get("/os-report", response_model=OsReportResponse)
@@ -23,6 +24,10 @@ async def get_os_report():
       2. vm.config.guestFullName from vCenter (vmx config file, fallback)
       3. os_family from Jira CMDB (last resort, often lacks version info)
     """
+    cached = response_cache.get("os-report", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     vms_cached       = db.get("vms")
     phys_cached      = db.get("physical_servers")
     vc_vms_cached    = db.get("vcenter_vms")
@@ -133,7 +138,7 @@ async def get_os_report():
         x.days_until_eol if x.days_until_eol is not None else 999_999,
     ))
 
-    return OsReportResponse(
+    result = OsReportResponse(
         total_servers=len(servers),
         supported=sum(1 for s in servers if s.os_status == "supported"),
         ending_soon=sum(1 for s in servers if s.os_status == "ending_soon"),
@@ -143,6 +148,8 @@ async def get_os_report():
         servers=servers,
         synced_at=updated_at,
     )
+    response_cache.put("os-report", result)
+    return result
 
 
 # ── OS Progress baseline ───────────────────────────────────────────────────────

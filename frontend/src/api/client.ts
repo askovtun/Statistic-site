@@ -12,6 +12,16 @@ async function apiPost<T>(path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`API ${path} → ${r.status} ${r.statusText}`);
+  return r.json() as Promise<T>;
+}
+
 export interface ComparisonItem {
   name: string;
   ci_type: "vm" | "physical";
@@ -356,11 +366,117 @@ export interface SecurityDashboardResponse {
   ending_soon_count: number;
   unmonitored_vm_count: number;
   unmonitored_phys_count: number;
+  unknown_os_count: number;
+  no_version_count: number;
   eol_items: SecurityServerItem[];
   ending_soon_items: SecurityServerItem[];
   unmonitored_vms: SecurityServerItem[];
   unmonitored_phys: SecurityServerItem[];
+  unknown_os_items: SecurityServerItem[];
+  no_version_items: SecurityServerItem[];
   synced_at: string | null;
+}
+
+// ── Disk Space Forecast ───────────────────────────────────────────────────────
+
+export interface DiskForecastItem {
+  name: string;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+  current_free_pct: number | null;
+  min_free_pct: number | null;
+  days_until_full: number | null;
+  trend_pct_per_day: number | null;
+  data_points: number;
+}
+
+export interface DiskForecastResponse {
+  total: number;
+  critical: number;
+  warning: number;
+  items: DiskForecastItem[];
+  synced_at: string | null;
+  period_days: number;
+}
+
+// ── Disk Analytics ────────────────────────────────────────────────────────────
+
+export interface DiskReclamationItem {
+  name: string;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+  avg_free_pct: number;
+  min_free_pct: number;
+  variance_pct: number;
+  data_points: number;
+}
+
+export interface DiskAnomalyItem {
+  name: string;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+  current_free_pct: number | null;
+  start_free_pct: number | null;
+  drop_pct: number | null;
+  recent_slope: number | null;
+  hist_slope: number | null;
+  acceleration: number | null;
+  data_points: number;
+}
+
+export interface DiskFleetSummary {
+  total_vms_with_data: number;
+  critical_count: number;
+  warning_count: number;
+  ok_count: number;
+  reclamation_count: number;
+  anomaly_count: number;
+}
+
+export interface DiskAnalyticsResponse {
+  fleet: DiskFleetSummary;
+  reclamation: DiskReclamationItem[];
+  anomalies: DiskAnomalyItem[];
+  synced_at: string | null;
+  period_days: number;
+}
+
+// ── Network Channels ──────────────────────────────────────────────────────────
+
+export interface ChannelIface {
+  ifname: string;
+  itemid_in: string;
+  itemid_out: string | null;
+  last_in: number | null;
+  last_out: number | null;
+  lastclock: number | null;
+}
+
+export interface ChannelHost {
+  hostid: string;
+  name: string;
+  interfaces: ChannelIface[];
+}
+
+export interface ChannelHostsResponse {
+  hosts: ChannelHost[];
+  fetched_at: string;
+}
+
+export interface ChannelPoint {
+  clock: number;
+  in_bps: number | null;
+  out_bps: number | null;
+}
+
+export interface ChannelHistoryResponse {
+  hostid: string;
+  ifname: string;
+  points: ChannelPoint[];
+  fetched_at: string;
 }
 
 // ── VM Config Changes ─────────────────────────────────────────────────────────
@@ -423,9 +539,17 @@ export interface TopologyResponse {
 
 // ── CMDB vs vCenter Diff ──────────────────────────────────────────────────────
 
+export interface CmdbVcenterSyncResult {
+  updated: number;
+  skipped: number;
+  cluster_skipped: number;
+  errors: { name: string; error: string }[];
+}
+
 export interface CmdbVcenterDiffItem {
   name: string;
   ci_type: "vm" | "physical";
+  jira_id: string | null;
   fqdn: string | null;
   primary_ip: string | null;
   in_vcenter: boolean;
@@ -679,6 +803,35 @@ export interface ZombieServerResponse {
   period_days: number;
 }
 
+// ── vCenter New VMs ───────────────────────────────────────────────────────────
+
+export interface VCenterNewVM {
+  moid: string;
+  vc_name: string;
+  cmdb_name: string;
+  guest_hostname: string | null;
+  guest_ip: string | null;
+  power_state: string | null;
+  vcpu: number | null;
+  vram_gb: number | null;
+  cluster: string | null;
+  os_full_name: string | null;
+  created_at: string | null;
+}
+
+export interface VCenterNewVMsResponse {
+  total_vcenter: number;
+  not_in_cmdb: number;
+  items: VCenterNewVM[];
+  synced_at: string | null;
+}
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: { name: string; error: string }[];
+}
+
 export const api = {
   comparison: () => apiFetch<ComparisonResponse>("/api/comparison"),
   resources: (days?: number) =>
@@ -732,9 +885,18 @@ export const api = {
     apiFetch<VmChangesResponse>(`/api/vm-changes${days ? `?days=${days}` : ""}`),
   topology: () => apiFetch<TopologyResponse>("/api/topology"),
   cmdbVcenterDiff: () => apiFetch<CmdbVcenterDiffResponse>("/api/cmdb-vcenter-diff"),
+  cmdbVcenterSync: () => apiPost<CmdbVcenterSyncResult>("/api/cmdb-vcenter-sync"),
   zombieServers: (days?: number, minScore?: number) =>
     apiFetch<ZombieServerResponse>(
       `/api/zombie-servers?period_days=${days ?? 90}&min_score=${minScore ?? 1}`
+    ),
+  diskForecast: (periodDays?: number, warnDays?: number) =>
+    apiFetch<DiskForecastResponse>(
+      `/api/disk-forecast?period_days=${periodDays ?? 30}&warn_days=${warnDays ?? 90}`
+    ),
+  diskAnalytics: (periodDays?: number) =>
+    apiFetch<DiskAnalyticsResponse>(
+      `/api/disk-analytics?period_days=${periodDays ?? 30}`
     ),
   zabbixProblems: (dateFrom?: string, dateTill?: string) => {
     const params = new URLSearchParams();
@@ -742,5 +904,14 @@ export const api = {
     if (dateTill) params.set("date_till", dateTill);
     const qs = params.toString();
     return apiFetch<ZabbixProblemsResponse>(`/api/zabbix/problems${qs ? `?${qs}` : ""}`);
+  },
+  vcenterNewVMs: () => apiFetch<VCenterNewVMsResponse>("/api/vcenter-new-vms"),
+  importVCenterVMs: (moids: string[]) =>
+    apiPostJson<ImportResult>("/api/vcenter-new-vms/import", { moids }),
+  channelHosts: () => apiFetch<ChannelHostsResponse>("/api/network/channels/hosts"),
+  channelHistory: (hostid: string, ifname: string, itemidIn: string, itemidOut: string | null, hours: number) => {
+    const p = new URLSearchParams({ hostid, ifname, itemid_in: itemidIn, hours: String(hours) });
+    if (itemidOut) p.set("itemid_out", itemidOut);
+    return apiFetch<ChannelHistoryResponse>(`/api/network/channels/history?${p}`);
   },
 };

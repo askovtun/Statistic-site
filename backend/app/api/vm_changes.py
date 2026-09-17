@@ -7,15 +7,22 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Query
 
 from app.models.schemas import VmChangeItem, VmChangesResponse
-from app.services import db
+from app.services import db, response_cache
 
 router = APIRouter(tags=["vm-changes"])
+
+_CACHE_TTL = 300
 
 
 @router.get("/vm-changes", response_model=VmChangesResponse)
 async def get_vm_changes(
     days: int = Query(default=30, ge=1, le=365),
 ) -> VmChangesResponse:
+    cache_key = f"vm-changes-{days}"
+    cached = response_cache.get(cache_key, ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     since_ts = int(time.time()) - days * 86400
     with db._connect() as conn:
         rows = conn.execute(
@@ -35,4 +42,6 @@ async def get_vm_changes(
         )
         for row in rows
     ]
-    return VmChangesResponse(total=len(items), period_days=days, items=items)
+    result = VmChangesResponse(total=len(items), period_days=days, items=items)
+    response_cache.put(cache_key, result)
+    return result

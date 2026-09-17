@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type ResourceItem } from "../api/client";
 import StatusBadge from "../components/StatusBadge";
@@ -95,15 +96,40 @@ const numericColumnValue: Record<NumericColumnKey, (i: ResourceItem) => number |
 };
 
 export default function Resources() {
-  const [days, setDays] = useState(30);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [days, setDaysState] = useState(() => {
+    const d = Number(searchParams.get("days"));
+    return [7, 14, 30, 60, 90].includes(d) ? d : 30;
+  });
+  const [filter, setFilterState] = useState<ResourceItem["resource_status"] | "all" | "needs_attention">(() => {
+    const f = searchParams.get("filter") ?? "all";
+    return (["all", "needs_attention", "optimal", "oversized", "undersized", "no_data"] as const).includes(f as never) ? f as ResourceItem["resource_status"] | "all" | "needs_attention" : "all";
+  });
+  const [search, setSearchState] = useState(() => searchParams.get("search") ?? "");
+  const [cluster, setClusterState] = useState(() => searchParams.get("cluster") ?? "");
+
+  function setDays(v: number) {
+    setDaysState(v);
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.set("days", String(v)); return next; }, { replace: true });
+  }
+  function setFilter(v: ResourceItem["resource_status"] | "all" | "needs_attention") {
+    setFilterState(v);
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); if (v === "all") next.delete("filter"); else next.set("filter", v); return next; }, { replace: true });
+  }
+  function setSearch(v: string) {
+    setSearchState(v);
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); if (!v) next.delete("search"); else next.set("search", v); return next; }, { replace: true });
+  }
+  function setCluster(v: string) {
+    setClusterState(v);
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); if (!v) next.delete("cluster"); else next.set("cluster", v); return next; }, { replace: true });
+  }
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["resources", days],
     queryFn: () => api.resources(days),
   });
-
-  const [filter, setFilter] = useState<ResourceItem["resource_status"] | "all" | "needs_attention">("all");
-  const [search, setSearch] = useState("");
-  const [cluster, setCluster] = useState("");
   const [osFamily, setOsFamily] = useState("");
   const [groupByCluster, setGroupByCluster] = useState(false);
   const [page, setPage] = useState(1);

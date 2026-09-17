@@ -4,12 +4,13 @@ from app.models.schemas import (
     VCenterSnapshotsResponse, VCenterSnapshotItem,
     VCenterHostItem, VCenterHostsResponse,
 )
-from app.services import db, metrics_store, vcenter_client
+from app.services import db, metrics_store, response_cache, vcenter_client
 from app.services.sync_service import PERIODS
 
 router = APIRouter(tags=["vcenter"])
 
 _NOT_SYNCED = "Дані ще не синхронізовано. Натисніть «Оновити дані»."
+_CACHE_TTL  = 300
 
 _CPU_READY_WARN_PCT = 5.0
 _CPU_READY_CRIT_PCT = 10.0
@@ -58,6 +59,11 @@ async def get_vcenter_health(
     """Per-VM vCenter health metrics: CPU Ready, Memory Balloon/Swap, power state."""
     if period_days not in PERIODS:
         raise HTTPException(status_code=400, detail=f"period_days має бути одним з {PERIODS}")
+
+    cache_key = f"vcenter-health-{period_days}"
+    cached = response_cache.get(cache_key, ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
 
     vms_cached = db.get("vms")
     moid_map_cached = db.get("vm_moid_map")
@@ -123,7 +129,7 @@ async def get_vcenter_health(
     with_swap = sum(1 for i in items if i.mem_swapped_kb is not None and i.mem_swapped_kb > 0)
     with_snaps = sum(1 for i in items if i.snapshot_count > 0)
 
-    return VCenterHealthResponse(
+    result = VCenterHealthResponse(
         total_vms=len(items),
         powered_on=powered_on,
         powered_off=powered_off,
@@ -134,6 +140,8 @@ async def get_vcenter_health(
         items=items,
         synced_at=updated_at,
     )
+    response_cache.put(cache_key, result)
+    return result
 
 
 @router.get("/vcenter/hosts", response_model=VCenterHostsResponse)
@@ -143,6 +151,11 @@ async def get_vcenter_hosts(
     """ESXi hypervisor health: CPU Ready aggregated from VMs running on each host."""
     if period_days not in PERIODS:
         raise HTTPException(status_code=400, detail=f"period_days має бути одним з {PERIODS}")
+
+    cache_key = f"vcenter-hosts-{period_days}"
+    cached = response_cache.get(cache_key, ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
 
     vms_cached = db.get("vms")
     hosts_cached = db.get("vcenter_hosts")
@@ -211,13 +224,15 @@ async def get_vcenter_hosts(
     powered_on = sum(1 for i in items if i.power_state == "poweredOn")
     warn_count = sum(1 for i in items if i.status in ("critical", "warning"))
 
-    return VCenterHostsResponse(
+    result = VCenterHostsResponse(
         total_hosts=len(items),
         powered_on=powered_on,
         hosts_with_ready_warn=warn_count,
         items=items,
         synced_at=updated_at,
     )
+    response_cache.put(cache_key, result)
+    return result
 
 
 def _build_vm_cluster_map() -> dict[str, str | None]:

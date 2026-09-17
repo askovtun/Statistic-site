@@ -9,9 +9,11 @@ from fastapi import APIRouter, HTTPException
 from app.models.schemas import (
     TopologyClusterItem, TopologyHostItem, TopologyResponse, TopologyVmItem,
 )
-from app.services import db
+from app.services import db, response_cache
 
 router = APIRouter(tags=["topology"])
+
+_CACHE_TTL = 300
 
 _WITNESS_RE = re.compile(r"witness", re.IGNORECASE)
 _STATUS_ORDER = {"critical": 0, "warning": 1, "ok": 2, "unknown": 3}
@@ -38,6 +40,10 @@ def _wavg(hosts: list[dict], key: str) -> float | None:
 
 @router.get("/topology", response_model=TopologyResponse)
 async def get_topology() -> TopologyResponse:
+    cached = response_cache.get("topology", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     hosts_cached   = db.get("vcenter_hosts")
     vc_vms_cached  = db.get("vcenter_vms")
 
@@ -113,7 +119,7 @@ async def get_topology() -> TopologyResponse:
 
     clusters.sort(key=lambda c: (_STATUS_ORDER.get(c.status, 3), -(c.vm_count or 0)))
 
-    return TopologyResponse(
+    result = TopologyResponse(
         total_clusters=len(clusters),
         total_hosts=sum(c.host_count for c in clusters),
         total_vms=sum(c.vm_count for c in clusters),
@@ -121,3 +127,5 @@ async def get_topology() -> TopologyResponse:
         clusters=clusters,
         synced_at=synced_at,
     )
+    response_cache.put("topology", result)
+    return result

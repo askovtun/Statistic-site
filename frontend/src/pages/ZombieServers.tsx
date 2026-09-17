@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type ZombieServerItem, type ZombieSignal } from "../api/client";
+import { exportToXlsx } from "../utils/exportXlsx";
 
 // ── Tokens (mirrors CSS custom properties approach via inline Tailwind) ────────
 
@@ -125,18 +126,75 @@ function CoverageChip({ pct }: { pct: number | null }) {
   );
 }
 
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+function Skeleton() {
+  return (
+    <div className="p-6 space-y-5">
+      <div className="space-y-1.5">
+        <div className="h-7 w-52 bg-slate-200 dark:bg-slate-700 rounded animate-pulse" />
+        <div className="h-4 w-80 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" />
+      </div>
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-14 bg-slate-100 dark:bg-slate-800 rounded-lg animate-pulse" />
+        ))}
+      </div>
+      <div className="h-16 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-lg animate-pulse" />
+      <div className="h-8 w-full bg-slate-100 dark:bg-slate-800 rounded-lg animate-pulse" />
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="h-10 bg-slate-50 dark:bg-slate-800 animate-pulse" />
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div key={i} className={`h-14 border-b border-slate-100 dark:border-slate-800 animate-pulse ${
+            i % 2 === 0 ? "bg-white dark:bg-slate-900" : "bg-slate-50/50 dark:bg-slate-800/20"
+          }`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Whitelist helpers ─────────────────────────────────────────────────────────
+
+function loadWhitelist(): Set<string> {
+  try {
+    const v = localStorage.getItem("zombie_whitelist");
+    return new Set(v ? (JSON.parse(v) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveWhitelist(s: Set<string>) {
+  localStorage.setItem("zombie_whitelist", JSON.stringify([...s]));
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 const PERIODS = [7, 14, 30, 90] as const;
 const PAGE_SIZE = 50;
 
+function lsInt(key: string, fallback: number): number {
+  const v = localStorage.getItem(key);
+  return v != null && !isNaN(+v) ? +v : fallback;
+}
+
 export default function ZombieServers() {
-  const [days, setDays]                     = useState<7 | 14 | 30 | 90>(90);
-  const [minScore, setMinScore]             = useState(1);
-  const [search, setSearch]                 = useState("");
-  const [clusterFilter, setClusterFilter]   = useState("");
-  const [signalFilter, setSignalFilter]     = useState<ZombieSignal | "">("");
-  const [page, setPage]                     = useState(1);
+  const [days, setDays] = useState<7 | 14 | 30 | 90>(
+    () => {
+      const v = lsInt("zs_days", 90);
+      return (PERIODS.includes(v as any) ? v : 90) as 7 | 14 | 30 | 90;
+    }
+  );
+  const [minScore, setMinScore]           = useState(() => lsInt("zs_minScore", 1));
+  const [search, setSearch]               = useState("");
+  const [clusterFilter, setClusterFilter] = useState("");
+  const [signalFilter, setSignalFilter]   = useState<ZombieSignal | "">("");
+  const [page, setPage]                   = useState(1);
+
+  // Whitelist
+  const [whitelist, setWhitelist]         = useState<Set<string>>(loadWhitelist);
+  const [hideWhitelisted, setHideWhitelisted] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["zombie-servers", days, minScore],
@@ -152,6 +210,7 @@ export default function ZombieServers() {
 
   const filtered = useMemo(() => {
     let r = items;
+    if (hideWhitelisted) r = r.filter((i) => !whitelist.has(i.name));
     if (clusterFilter) r = r.filter((i) => i.cluster === clusterFilter);
     if (signalFilter)  r = r.filter((i) => i.signals.includes(signalFilter as ZombieSignal));
     if (search.trim()) {
@@ -164,19 +223,66 @@ export default function ZombieServers() {
       );
     }
     return r;
-  }, [items, clusterFilter, signalFilter, search]);
+  }, [items, clusterFilter, signalFilter, search, whitelist, hideWhitelisted]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageItems  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const resetPage  = () => setPage(1);
 
+  function toggleWhitelist(name: string) {
+    setWhitelist((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      saveWhitelist(next);
+      return next;
+    });
+  }
+
+  function clearWhitelist() {
+    setWhitelist(new Set());
+    localStorage.removeItem("zombie_whitelist");
+  }
+
+  function handleDays(p: typeof PERIODS[number]) {
+    setDays(p);
+    localStorage.setItem("zs_days", String(p));
+    resetPage();
+  }
+
+  function handleMinScore(s: number) {
+    setMinScore(s);
+    localStorage.setItem("zs_minScore", String(s));
+    resetPage();
+  }
+
+  function handleExport() {
+    exportToXlsx(`zombie-servers-${days}d.xlsx`, "Зомбі-сервери", filtered.map((i) => ({
+      "Сервер":              i.name,
+      "FQDN":                i.fqdn ?? "",
+      "IP":                  i.primary_ip ?? "",
+      "Кластер":             i.cluster ?? "",
+      "OS":                  i.os_family ?? "",
+      "vCPU":                i.vcpu ?? "",
+      "vRAM (ГБ)":           i.vram_gb ?? "",
+      "Score":               i.zombie_score,
+      "Сигнали":             i.signals.join(", "),
+      "CPU avg %":           i.avg_cpu_pct ?? "",
+      "CPU пік %":           i.max_cpu_pct ?? "",
+      "RAM avg %":           i.avg_ram_pct ?? "",
+      "RAM пік %":           i.max_ram_pct ?? "",
+      "Покриття даних %":    i.data_coverage_pct ?? "",
+      "В Zabbix":            i.in_zabbix ? "Так" : "Ні",
+      "В vCenter":           i.in_vcenter ? "Так" : "Ні",
+      "Стан живлення":       i.power_state,
+      "Переглянуто":         whitelist.has(i.name) ? "Так" : "Ні",
+    })));
+  }
+
   const btnBase = "px-3 py-1.5 text-xs rounded-lg border transition-colors font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400";
   const btnOff  = `${btnBase} border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 bg-white dark:bg-slate-900`;
   const selectCls = "border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300";
 
-  if (isLoading) return (
-    <div className="p-10 text-slate-400 animate-pulse text-sm">Завантаження зомбі-серверів…</div>
-  );
+  if (isLoading) return <Skeleton />;
   if (error) return (
     <div className="p-10 text-red-500 text-sm">Помилка: {String(error)}</div>
   );
@@ -244,7 +350,7 @@ export default function ZombieServers() {
             <button
               key={p}
               title={`Аналізувати метрики за останні ${p} днів`}
-              onClick={() => { setDays(p); resetPage(); }}
+              onClick={() => handleDays(p)}
               className={days === p
                 ? `${btnBase} bg-blue-600 text-white border-blue-600`
                 : btnOff}
@@ -269,7 +375,7 @@ export default function ZombieServers() {
             <button
               key={s}
               title={tip}
-              onClick={() => { setMinScore(s); resetPage(); }}
+              onClick={() => handleMinScore(s)}
               className={minScore === s
                 ? `${btnBase} bg-red-600 text-white border-red-600`
                 : btnOff}
@@ -278,6 +384,26 @@ export default function ZombieServers() {
             </button>
           ))}
         </div>
+
+        <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
+
+        {/* Whitelist toggle */}
+        {whitelist.size > 0 && (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => { setHideWhitelisted((h) => !h); resetPage(); }}
+              title={hideWhitelisted ? "Показати переглянуті" : "Сховати переглянуті ВМ"}
+              className={hideWhitelisted
+                ? `${btnBase} bg-green-600 text-white border-green-600`
+                : btnOff}
+            >
+              {hideWhitelisted ? `✓ Сховано ${whitelist.size}` : `Сховати переглянуті (${whitelist.size})`}
+            </button>
+            <button onClick={clearWhitelist} title="Очистити список переглянутих" className={btnOff}>
+              Очистити
+            </button>
+          </div>
+        )}
 
         {/* Signal filter */}
         <select value={signalFilter}
@@ -316,17 +442,32 @@ export default function ZombieServers() {
         <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
           <span className="text-xs text-slate-600 dark:text-slate-300 font-medium">
             {filtered.length} серверів
+            {whitelist.size > 0 && !hideWhitelisted && (
+              <span className="ml-2 text-slate-400 dark:text-slate-500 font-normal">
+                · {whitelist.size} позначено як переглянуто
+              </span>
+            )}
           </span>
-          <span className="text-[11px] text-slate-400 dark:text-slate-500">
-            Сортування: score ↓
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-slate-400 dark:text-slate-500">
+              Сортування: score ↓
+            </span>
+            <button
+              onClick={handleExport}
+              disabled={filtered.length === 0}
+              title="Експортувати поточну вибірку в Excel"
+              className={`${btnOff} disabled:opacity-40`}
+            >
+              Експорт XLSX ↓
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-xs" style={{ fontVariantNumeric: "tabular-nums" }}>
             <thead>
               <tr className="border-b border-slate-100 dark:border-slate-800">
-                {["Сервер", "Score", "Сигнали", "CPU avg · пік", "RAM avg · пік", "vCPU / RAM", "Кластер", "IP"].map((h) => (
+                {["Сервер", "Score", "Сигнали", "CPU avg · пік", "RAM avg · пік", "vCPU / RAM", "Кластер", "IP", ""].map((h) => (
                   <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500 whitespace-nowrap">
                     {h}
                   </th>
@@ -336,15 +477,20 @@ export default function ZombieServers() {
             <tbody className="divide-y divide-slate-50 dark:divide-slate-800/80">
               {pageItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-10 text-center text-slate-400 dark:text-slate-500">
+                  <td colSpan={9} className="px-4 py-10 text-center text-slate-400 dark:text-slate-500">
                     Жодного зомбі-сервера за вибраними фільтрами
                   </td>
                 </tr>
               ) : pageItems.map((item: ZombieServerItem) => {
                 const stripe = SCORE_STRIPE[Math.min(item.zombie_score, 5)] ?? SCORE_STRIPE[5];
+                const isReviewed = whitelist.has(item.name);
                 return (
                   <tr key={item.name}
-                    className={`border-l-4 ${stripe} hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors`}>
+                    className={`border-l-4 ${stripe} transition-colors ${
+                      isReviewed
+                        ? "opacity-50 hover:opacity-100"
+                        : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                    }`}>
 
                     {/* Name */}
                     <td className="px-3 py-2.5 max-w-[200px]">
@@ -406,6 +552,21 @@ export default function ZombieServers() {
                     {/* IP */}
                     <td className="px-3 py-2.5 text-slate-400 dark:text-slate-500 font-mono whitespace-nowrap">
                       {item.primary_ip ?? "—"}
+                    </td>
+
+                    {/* Reviewed toggle */}
+                    <td className="px-3 py-2.5 whitespace-nowrap">
+                      <button
+                        onClick={() => toggleWhitelist(item.name)}
+                        title={isReviewed ? "Скасувати позначку" : "Позначити як переглянуто"}
+                        className={`text-[10px] border rounded px-1.5 py-0.5 leading-none transition-colors ${
+                          isReviewed
+                            ? "bg-green-100 text-green-700 border-green-300 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700"
+                            : "text-slate-300 dark:text-slate-600 border-slate-200 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-500 hover:text-slate-500 dark:hover:text-slate-400"
+                        }`}
+                      >
+                        {isReviewed ? "✓ Переглянуто" : "Переглянуто?"}
+                      </button>
                     </td>
                   </tr>
                 );

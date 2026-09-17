@@ -539,6 +539,7 @@ class ZabbixProblemsResponse(BaseModel):
 class CmdbVcenterDiffItem(BaseModel):
     name: str
     ci_type: str = "vm"
+    jira_id: str | None = None
     fqdn: str | None = None
     primary_ip: str | None = None
     in_vcenter: bool = True
@@ -593,11 +594,80 @@ class SecurityDashboardResponse(BaseModel):
     ending_soon_count: int = 0
     unmonitored_vm_count: int = 0
     unmonitored_phys_count: int = 0
+    unknown_os_count: int = 0
+    no_version_count: int = 0
     eol_items: list[SecurityServerItem] = []
     ending_soon_items: list[SecurityServerItem] = []
     unmonitored_vms: list[SecurityServerItem] = []
     unmonitored_phys: list[SecurityServerItem] = []
+    unknown_os_items: list[SecurityServerItem] = []
+    no_version_items: list[SecurityServerItem] = []
     synced_at: str | None = None
+
+
+# ── Disk Space Forecast ───────────────────────────────────────────────────────
+
+class DiskReclamationItem(BaseModel):
+    name: str
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    avg_free_pct: float
+    min_free_pct: float
+    variance_pct: float
+    data_points: int = 0
+
+
+class DiskAnomalyItem(BaseModel):
+    name: str
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    current_free_pct: float | None = None
+    start_free_pct: float | None = None
+    drop_pct: float | None = None
+    recent_slope: float | None = None
+    hist_slope: float | None = None
+    acceleration: float | None = None
+    data_points: int = 0
+
+
+class DiskFleetSummary(BaseModel):
+    total_vms_with_data: int
+    critical_count: int     # < 10% free
+    warning_count: int      # 10–20% free
+    ok_count: int           # > 20% free
+    reclamation_count: int  # at default thresholds (avg_free ≥ 30%, σ ≤ 3%)
+    anomaly_count: int      # at default threshold (drop ≥ 5%)
+
+
+class DiskAnalyticsResponse(BaseModel):
+    fleet: DiskFleetSummary
+    reclamation: list[DiskReclamationItem]
+    anomalies: list[DiskAnomalyItem]
+    synced_at: str | None = None
+    period_days: int
+
+
+class DiskForecastItem(BaseModel):
+    name: str
+    cluster: str | None = None
+    fqdn: str | None = None
+    primary_ip: str | None = None
+    current_free_pct: float | None = None
+    min_free_pct: float | None = None
+    days_until_full: int | None = None
+    trend_pct_per_day: float | None = None
+    data_points: int = 0
+
+
+class DiskForecastResponse(BaseModel):
+    total: int
+    critical: int = 0
+    warning: int = 0
+    items: list[DiskForecastItem]
+    synced_at: str | None = None
+    period_days: int = 30
 
 
 # ── VM Config Changes ──────────────────────────────────────────────────────────

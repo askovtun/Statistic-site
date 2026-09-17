@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, type CmdbVcenterDiffItem } from "../api/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type CmdbVcenterDiffItem, type CmdbVcenterSyncResult } from "../api/client";
 
 // ── Filter tabs ───────────────────────────────────────────────────────────────
 
@@ -106,18 +106,41 @@ function SummaryCard({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+type SyncStatus =
+  | { type: "idle" }
+  | { type: "loading" }
+  | { type: "done"; result: CmdbVcenterSyncResult }
+  | { type: "error"; msg: string };
+
 const PAGE_SIZE = 50;
 
 export default function CmdbVcenter() {
+  const queryClient = useQueryClient();
   const [tab, setTab]         = useState<FilterTab>("diff");
   const [search, setSearch]   = useState("");
   const [page, setPage]       = useState(1);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({ type: "idle" });
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["cmdb-vcenter-diff"],
     queryFn:  api.cmdbVcenterDiff,
     staleTime: 5 * 60 * 1000,
   });
+
+  async function handleSync() {
+    if (!window.confirm(
+      `Синхронізувати ${data?.with_diff ?? 0} ВМ з відмінностями?\n` +
+      "vCenter → CMDB: оновляться vCPU, RAM та кластер для відповідних VM."
+    )) return;
+    setSyncStatus({ type: "loading" });
+    try {
+      const result = await api.cmdbVcenterSync();
+      setSyncStatus({ type: "done", result });
+      queryClient.invalidateQueries({ queryKey: ["cmdb-vcenter-diff"] });
+    } catch (err) {
+      setSyncStatus({ type: "error", msg: String(err) });
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!data) return [];
@@ -182,6 +205,43 @@ export default function CmdbVcenter() {
         <SummaryCard label="Розбіжність кластеру"  value={data.cluster_diff_count} color="amber" />
       </div>
 
+      {/* Sync result banner */}
+      {syncStatus.type === "done" && (
+        <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-900/20 dark:border-green-800 px-4 py-3 text-sm">
+          <p className="font-medium text-green-700 dark:text-green-400">
+            ✓ Синхронізацію завершено: оновлено {syncStatus.result.updated} ВМ
+            {syncStatus.result.cluster_skipped > 0 &&
+              `, кластер не знайдено для ${syncStatus.result.cluster_skipped} ВМ`}
+            {syncStatus.result.errors.length > 0 &&
+              `, помилок: ${syncStatus.result.errors.length}`}
+          </p>
+          {syncStatus.result.errors.length > 0 && (
+            <ul className="mt-1 space-y-0.5 text-xs text-red-600 dark:text-red-400">
+              {syncStatus.result.errors.map((e, i) => (
+                <li key={i}>• {e.name}: {e.error}</li>
+              ))}
+            </ul>
+          )}
+          <button
+            onClick={() => setSyncStatus({ type: "idle" })}
+            className="mt-1 text-xs text-green-600 dark:text-green-400 underline"
+          >
+            Закрити
+          </button>
+        </div>
+      )}
+      {syncStatus.type === "error" && (
+        <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800 px-4 py-3 text-sm">
+          <p className="text-red-600 dark:text-red-400">✗ Помилка синхронізації: {syncStatus.msg}</p>
+          <button
+            onClick={() => setSyncStatus({ type: "idle" })}
+            className="mt-1 text-xs text-red-500 underline"
+          >
+            Закрити
+          </button>
+        </div>
+      )}
+
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-3">
         {/* Tabs */}
@@ -209,6 +269,27 @@ export default function CmdbVcenter() {
           onChange={(e) => handleSearch(e.target.value)}
           className="ml-auto px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-blue-400 w-64"
         />
+
+        {/* Sync button */}
+        {(data?.with_diff ?? 0) > 0 && (
+          <button
+            onClick={handleSync}
+            disabled={syncStatus.type === "loading"}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium
+                       disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {syncStatus.type === "loading" ? (
+              <>
+                <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Синхронізую...
+              </>
+            ) : (
+              <>
+                ↓ Синхронізувати до CMDB ({data?.with_diff})
+              </>
+            )}
+          </button>
+        )}
       </div>
 
       {/* Table */}

@@ -218,3 +218,135 @@ def _int(val: str | None) -> int | None:
         return int(float(val))
     except (ValueError, TypeError):
         return None
+
+
+async def _post(client: httpx.AsyncClient, path: str, body: dict) -> Any:
+    url = f"{_BASE}{path}"
+    for attempt in range(1, settings.request_retries + 1):
+        try:
+            r = await client.post(url, json=body, headers=_HEADERS,
+                                  auth=_auth(), timeout=30)
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 5))
+                log.warning("Rate-limited by Jira, sleeping %ss", wait)
+                await asyncio.sleep(wait)
+                continue
+            if r.status_code in (502, 503, 504):
+                wait = settings.request_delay * attempt * 3
+                await asyncio.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except httpx.RequestError as exc:
+            if attempt < settings.request_retries:
+                await asyncio.sleep(settings.request_delay * attempt * 2)
+            else:
+                raise RuntimeError(f"Jira POST failed: {exc}") from exc
+    return {}
+
+
+async def _put(client: httpx.AsyncClient, path: str, body: dict) -> Any:
+    url = f"{_BASE}{path}"
+    for attempt in range(1, settings.request_retries + 1):
+        try:
+            r = await client.put(url, json=body, headers=_HEADERS,
+                                 auth=_auth(), timeout=30)
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 5))
+                await asyncio.sleep(wait)
+                continue
+            if r.status_code in (502, 503, 504):
+                await asyncio.sleep(settings.request_delay * attempt * 3)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except httpx.RequestError as exc:
+            if attempt < settings.request_retries:
+                await asyncio.sleep(settings.request_delay * attempt * 2)
+            else:
+                raise RuntimeError(f"Jira PUT failed: {exc}") from exc
+    return {}
+
+
+# Separate cache for name→id direction (used when creating objects)
+_attr_name_to_id_cache: dict[int, dict[str, int]] = {}
+
+
+async def _get_attr_name_to_id(client: httpx.AsyncClient, type_id: int) -> dict[str, int]:
+    if type_id not in _attr_name_to_id_cache:
+        data = await _get(client, f"/objecttype/{type_id}/attributes")
+        _attr_name_to_id_cache[type_id] = {a["name"]: a["id"] for a in data}
+    return _attr_name_to_id_cache[type_id]
+
+
+async def create_vm(
+    name: str,
+    vcpu: int | None = None,
+    vram_gb: int | None = None,
+    cluster_jira_id: str | None = None,
+    fqdn: str | None = None,
+) -> dict:
+    """Create a single VM in Jira CMDB and return the created object dict."""
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+        attr_map = await _get_attr_name_to_id(client, settings.jira_vm_type_id)
+
+        attrs = []
+
+        def _attr(attr_name: str, value: str) -> None:
+            aid = attr_map.get(attr_name)
+            if aid:
+                attrs.append({
+                    "objectTypeAttributeId": aid,
+                    "objectAttributeValues": [{"value": value}],
+                })
+
+        _attr("Name", name)
+        if vcpu is not None:
+            _attr("vCPU Count", str(vcpu))
+        if vram_gb is not None:
+            _attr("vRAM GB", str(vram_gb))
+        if cluster_jira_id:
+            _attr("Cluster", cluster_jira_id)
+        if fqdn:
+            _attr("FQDN", fqdn)
+
+        return await _post(client, "/object/create", {
+            "objectTypeId": settings.jira_vm_type_id,
+            "attributes": attrs,
+        })
+
+
+async def update_vm(
+    jira_id: str,
+    vcpu: int | None = None,
+    vram_gb: int | None = None,
+    cluster_jira_id: str | None = None,
+) -> dict:
+    """Update VM parameters in Jira CMDB. Only the provided fields are changed."""
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+        attr_map = await _get_attr_name_to_id(client, settings.jira_vm_type_id)
+
+        attrs = []
+
+        def _attr(attr_name: str, value: str) -> None:
+            aid = attr_map.get(attr_name)
+            if aid:
+                attrs.append({
+                    "objectTypeAttributeId": aid,
+                    "objectAttributeValues": [{"value": value}],
+                })
+
+        if vcpu is not None:
+            _attr("vCPU Count", str(vcpu))
+        if vram_gb is not None:
+            _attr("vRAM GB", str(vram_gb))
+        if cluster_jira_id is not None:
+            _attr("Cluster", cluster_jira_id)
+
+        if not attrs:
+            return {}
+
+        return await _put(client, f"/object/{jira_id}", {
+            "objectTypeId": settings.jira_vm_type_id,
+            "attributes": attrs,
+        })

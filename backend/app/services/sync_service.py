@@ -86,14 +86,20 @@ def _track_vm_config_changes(vms: list[dict]) -> None:
                 changes,
             )
         conn.execute("DELETE FROM vm_config_snapshot")
+        seen_names: set[str] = set()
+        snapshot_rows = []
+        for vm in vms:
+            name = vm.get("name")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                snapshot_rows.append((
+                    name, vm.get("vcpu"), vm.get("vram_gb"),
+                    vm.get("cluster"), vm.get("status"), vm.get("os_family"), now_ts,
+                ))
         conn.executemany(
             "INSERT INTO vm_config_snapshot (name, vcpu, vram_gb, cluster, status, os_family, seen_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                (vm.get("name"), vm.get("vcpu"), vm.get("vram_gb"),
-                 vm.get("cluster"), vm.get("status"), vm.get("os_family"), now_ts)
-                for vm in vms if vm.get("name")
-            ],
+            snapshot_rows,
         )
         conn.commit()
     if changes:

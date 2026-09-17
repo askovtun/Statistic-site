@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from pyVim.connect import Disconnect, SmartConnect
-from pyVmomi import vim
+from pyVmomi import vim, vmodl
 
 from app.config import settings
 
@@ -77,6 +77,40 @@ def _connect():
     )
 
 
+def _fetch_create_dates_batch(content, vm_objects: list) -> dict[str, str]:
+    """Batch-fetch config.createDate for all VMs in a single PropertyCollector call."""
+    if not vm_objects:
+        return {}
+    try:
+        collector = content.propertyCollector
+        obj_specs = [
+            vmodl.query.PropertyCollector.ObjectSpec(obj=vm, skip=False)
+            for vm in vm_objects
+        ]
+        prop_spec = vmodl.query.PropertyCollector.PropertySpec(
+            type=vim.VirtualMachine,
+            all=False,
+            pathSet=["config.createDate"],
+        )
+        filter_spec = vmodl.query.PropertyCollector.FilterSpec(
+            objectSet=obj_specs,
+            propSet=[prop_spec],
+        )
+        result = collector.RetrieveContents([filter_spec])
+        dates: dict[str, str] = {}
+        for obj_content in result:
+            for prop in (obj_content.propSet or []):
+                if prop.name == "config.createDate" and prop.val:
+                    try:
+                        dates[obj_content.obj._moId] = prop.val.isoformat()
+                    except Exception:
+                        pass
+        return dates
+    except Exception:
+        log.exception("Failed to batch-fetch VM create dates")
+        return {}
+
+
 def _list_vms_sync() -> list[dict]:
     """VM inventory: name/guest identity + current disk-space usage % + power state."""
     si = _connect()
@@ -85,8 +119,10 @@ def _list_vms_sync() -> list[dict]:
     try:
         content = si.RetrieveContent()
         view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
+        vm_list = list(view.view)
+        create_dates = _fetch_create_dates_batch(content, vm_list)
         out = []
-        for vm in view.view:
+        for vm in vm_list:
             s = vm.summary
             if not s or not s.config:
                 continue
@@ -110,7 +146,9 @@ def _list_vms_sync() -> list[dict]:
             # OS: prefer guest-reported (VMware Tools inside VM), fall back to config
             guest_os = (guest.guestFullName or None) if guest else None
             config_os = (s.config.guestFullName or None) if s.config else None
-            hw = s.config.hardware if s.config else None
+            # numCpu/memorySizeMB are on ConfigSummary; .hardware is only on ConfigInfo
+            num_cpu = getattr(s.config, "numCpu", None) if s.config else None
+            mem_mb = getattr(s.config, "memorySizeMB", None) if s.config else None
             out.append({
                 "moid": vm._moId,
                 "name": s.config.name,
@@ -122,8 +160,9 @@ def _list_vms_sync() -> list[dict]:
                 "runtime_host": runtime_host,
                 "os_full_name": guest_os or config_os,
                 "os_from_tools": bool(guest_os),
-                "vcpu": hw.numCPU if hw else None,
-                "vram_gb": round(hw.memoryMB / 1024) if hw and hw.memoryMB else None,
+                "vcpu": num_cpu or None,
+                "vram_gb": round(mem_mb / 1024) if mem_mb else None,
+                "created_at": create_dates.get(vm._moId),
             })
         view.Destroy()
         return out

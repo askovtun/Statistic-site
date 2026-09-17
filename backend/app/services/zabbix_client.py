@@ -243,7 +243,7 @@ class ZabbixClient:
             await self._ensure_auth(client)
             events = await self._call(client, "event.get", {
                 "output": ["eventid", "objectid", "clock", "acknowledged",
-                           "suppressed", "tags"],
+                           "suppressed"],
                 "source": 0,   # trigger events
                 "object": 0,   # triggers
                 "value": 1,    # PROBLEM start events
@@ -284,6 +284,131 @@ class ZabbixClient:
         return result
 
 
+    # Hosts matching these name substrings (case-insensitive) are considered network devices
+    _NET_DEVICE_PATTERNS = ("forti", "cisco", "fg-", "fgt-")
+
+    @staticmethod
+    def _is_net_device(host_name: str) -> bool:
+        n = host_name.lower()
+        return any(p in n for p in ZabbixClient._NET_DEVICE_PATTERNS)
+
+    async def get_channel_hosts(self) -> list[dict]:
+        """Return FortiGate/Cisco hosts that have net.if.in items."""
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+            await self._ensure_auth(client)
+            items = await self._call(client, "item.get", {
+                "output": ["itemid", "hostid", "name", "key_", "units", "lastvalue", "lastclock"],
+                "search": {"key_": "net.if.in"},
+                "searchWildcardsEnabled": True,
+                "selectHosts": ["hostid", "name"],
+                "status": 0,
+                "limit": 1000,
+            })
+        if not items:
+            return []
+
+        # Build per-host interface map from in-items, then pair with out-items
+        host_map: dict[str, dict] = {}
+        iface_map: dict[str, dict] = {}  # ifname@hostid -> iface dict
+
+        for it in (items or []):
+            hosts = it.get("hosts") or []
+            if not hosts:
+                continue
+            hostid = hosts[0]["hostid"]
+            host_name = hosts[0]["name"]
+            # Only include FortiGate and Cisco devices
+            if not self._is_net_device(host_name):
+                continue
+            if hostid not in host_map:
+                host_map[hostid] = {"hostid": hostid, "name": host_name, "interfaces": []}
+
+            # Extract ifname from key_ = "net.if.in[ifname,...]"
+            key = it["key_"]
+            ifname = key[len("net.if.in["):].rstrip("]").split(",")[0]
+            slot = f"{ifname}@{hostid}"
+            if slot not in iface_map:
+                iface = {
+                    "ifname": ifname,
+                    "itemid_in": it["itemid"],
+                    "itemid_out": None,
+                    "last_in": float(it["lastvalue"]) if it.get("lastvalue") else None,
+                    "last_out": None,
+                    "lastclock": int(it["lastclock"]) if it.get("lastclock") else None,
+                }
+                iface_map[slot] = iface
+                host_map[hostid]["interfaces"].append(iface)
+
+        # Find matching out-items
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+            await self._ensure_auth(client)
+            out_items = await self._call(client, "item.get", {
+                "output": ["itemid", "hostid", "key_", "lastvalue"],
+                "search": {"key_": "net.if.out"},
+                "searchWildcardsEnabled": True,
+                "status": 0,
+                "limit": 1000,
+            })
+        for it in (out_items or []):
+            hostid = it.get("hostid", "")
+            key = it["key_"]
+            ifname = key[len("net.if.out["):].rstrip("]").split(",")[0]
+            slot = f"{ifname}@{hostid}"
+            if slot in iface_map:
+                iface_map[slot]["itemid_out"] = it["itemid"]
+                iface_map[slot]["last_out"] = float(it["lastvalue"]) if it.get("lastvalue") else None
+
+        return list(host_map.values())
+
+    async def get_channel_history(
+        self, itemid_in: str, itemid_out: str | None, time_from: int, time_till: int
+    ) -> list[dict]:
+        """Return time-series for one network interface (in + out bps)."""
+        itemids = [itemid_in]
+        if itemid_out:
+            itemids.append(itemid_out)
+        async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
+            await self._ensure_auth(client)
+            # Try float history first (type 0=uint, 3=float — network counters are often uint)
+            points = await self._call(client, "history.get", {
+                "output": "extend",
+                "history": 3,
+                "itemids": itemids,
+                "time_from": time_from,
+                "time_till": time_till,
+                "sortfield": "clock",
+                "sortorder": "ASC",
+                "limit": 10000,
+            })
+            if not points:
+                points = await self._call(client, "history.get", {
+                    "output": "extend",
+                    "history": 0,
+                    "itemids": itemids,
+                    "time_from": time_from,
+                    "time_till": time_till,
+                    "sortfield": "clock",
+                    "sortorder": "ASC",
+                    "limit": 10000,
+                })
+
+        # Merge into {clock -> {in, out}}
+        merged: dict[int, dict] = {}
+        for p in (points or []):
+            clock = int(p["clock"])
+            val = float(p["value"]) if p.get("value") else 0.0
+            if p["itemid"] == itemid_in:
+                merged.setdefault(clock, {})["in"] = val
+            elif itemid_out and p["itemid"] == itemid_out:
+                merged.setdefault(clock, {})["out"] = val
+
+        result = []
+        for clock in sorted(merged):
+            row = merged[clock]
+            result.append({"clock": clock, "in": row.get("in"), "out": row.get("out")})
+        return result
+
+
 _client = ZabbixClient()
 
 
@@ -307,3 +432,13 @@ async def get_problems() -> list[dict]:
 
 async def get_problems_history(time_from: int, time_till: int) -> list[dict]:
     return await _client.get_problems_history(time_from, time_till)
+
+
+async def get_channel_hosts() -> list[dict]:
+    return await _client.get_channel_hosts()
+
+
+async def get_channel_history(
+    itemid_in: str, itemid_out: str | None, time_from: int, time_till: int
+) -> list[dict]:
+    return await _client.get_channel_history(itemid_in, itemid_out, time_from, time_till)

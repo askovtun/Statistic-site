@@ -6,13 +6,19 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from app.models.schemas import UptimeItem, UptimeResponse
-from app.services import db
+from app.services import db, response_cache
 
 router = APIRouter()
+
+_CACHE_TTL = 300
 
 
 @router.get("/uptime", response_model=UptimeResponse)
 async def get_uptime() -> UptimeResponse:
+    cached = response_cache.get("uptime", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     vcenter_vms_cached = db.get("vcenter_vms")
     vms_cached         = db.get("vms")
     moid_map_cached    = db.get("vm_moid_map")
@@ -62,7 +68,7 @@ async def get_uptime() -> UptimeResponse:
     # Powered-on first, then by uptime days descending
     items.sort(key=lambda x: (0 if x.power_state == "poweredOn" else 1, -(x.uptime_days or 0)))
 
-    return UptimeResponse(
+    result = UptimeResponse(
         total=len(items),
         powered_on=sum(1 for i in items if i.power_state == "poweredOn"),
         powered_off=sum(1 for i in items if i.power_state == "poweredOff"),
@@ -70,3 +76,5 @@ async def get_uptime() -> UptimeResponse:
         items=items,
         synced_at=synced_at,
     )
+    response_cache.put("uptime", result)
+    return result

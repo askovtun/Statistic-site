@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Query
 from app.models.schemas import CmdbDayStats, CmdbStatsResponse, CmdbTypeStats
-from app.services import cmdb_tracker, db
+from app.services import cmdb_tracker, db, response_cache
 
 router = APIRouter(tags=["cmdb-stats"])
+
+_CACHE_TTL = 300
 
 _CI_TYPE_LABELS = {
     "vm":             "Віртуальні машини",
@@ -20,6 +22,11 @@ _CI_TYPE_LABELS = {
 @router.get("/cmdb-stats", response_model=CmdbStatsResponse)
 async def get_cmdb_stats(days: int = Query(default=90, ge=1, le=365)):
     """Daily CMDB change statistics: added / updated / removed CIs per day."""
+    cache_key = f"cmdb-stats-{days}"
+    cached = response_cache.get(cache_key, ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     raw_rows = cmdb_tracker.get_stats(days)
 
     # Group rows by date; aggregate across CI types into per-day totals
@@ -64,8 +71,10 @@ async def get_cmdb_stats(days: int = Query(default=90, ge=1, le=365)):
     synced_at_cached = db.get("vms")
     synced_at = synced_at_cached[1] if synced_at_cached else None
 
-    return CmdbStatsResponse(
+    result = CmdbStatsResponse(
         days=days_list,
         current_totals=current_totals,
         synced_at=synced_at,
     )
+    response_cache.put(cache_key, result)
+    return result

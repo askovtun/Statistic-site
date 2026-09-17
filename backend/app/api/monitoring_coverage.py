@@ -4,15 +4,22 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from app.models.schemas import CoveragePoint, CoverageResponse
-from app.services import cmdb_tracker, db
+from app.services import cmdb_tracker, db, response_cache
 
 router = APIRouter()
+
+_CACHE_TTL = 300
 
 
 @router.get("/monitoring-coverage", response_model=CoverageResponse)
 async def get_monitoring_coverage(
     days: int = Query(default=90, ge=1, le=365),
 ) -> CoverageResponse:
+    cache_key = f"monitoring-coverage-{days}"
+    cached = response_cache.get(cache_key, ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     # Current state from cache
     vms_cached       = db.get("vms")
     phys_cached      = db.get("physical_servers")
@@ -43,7 +50,7 @@ async def get_monitoring_coverage(
         for r in raw
     ]
 
-    return CoverageResponse(
+    result = CoverageResponse(
         current_vm_pct=current_vm_pct,
         current_phys_pct=current_phys_pct,
         vm_total=vm_total,
@@ -53,3 +60,5 @@ async def get_monitoring_coverage(
         history=history,
         synced_at=synced_at,
     )
+    response_cache.put(cache_key, result)
+    return result

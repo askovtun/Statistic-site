@@ -660,6 +660,43 @@ def get_zombie_metrics_batch(
     return result
 
 
+def get_disk_daily_trend_batch(
+    hostid_map: dict[str, str],
+    period_days: int,
+) -> dict[str, list[tuple[int, float]]]:
+    """Daily avg disk_free_pct per VM over period_days.
+
+    Returns {vm_name: [(day_ts, avg_free_pct), ...]} sorted ascending by day.
+    Only VMs with at least one data point are included.
+    """
+    if not hostid_map:
+        return {}
+
+    cutoff = int(time.time()) - period_days * 86400
+    inv = {v: k for k, v in hostid_map.items()}
+    hostids = list(hostid_map.values())
+    ph = ",".join("?" * len(hostids))
+
+    with db._connect() as conn:
+        rows = conn.execute(
+            f"SELECT hostid, (hour_clock / 86400) * 86400 AS day_ts, "
+            f"SUM(avg * num) / SUM(num) AS w_avg "
+            f"FROM metric_hourly "
+            f"WHERE source = 'zabbix' AND hostid IN ({ph}) "
+            f"AND metric = ? AND hour_clock >= ? AND num > 0 "
+            f"GROUP BY hostid, day_ts ORDER BY hostid, day_ts",
+            [*hostids, ITEM_DISK_FREE_PCT, cutoff],
+        ).fetchall()
+
+    result: dict[str, list[tuple[int, float]]] = {}
+    for hostid, day_ts, w_avg in rows:
+        vm_name = inv.get(hostid)
+        if vm_name and w_avg is not None:
+            result.setdefault(vm_name, []).append((int(day_ts), float(w_avg)))
+
+    return result
+
+
 def prune(max_age_days: int = 95) -> None:
     cutoff = int(time.time()) - max_age_days * 86400
     with db._connect() as conn:

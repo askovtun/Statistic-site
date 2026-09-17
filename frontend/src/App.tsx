@@ -20,6 +20,11 @@ import VmChanges from "./pages/VmChanges";
 import TopologyMap from "./pages/TopologyMap";
 import CmdbVcenter from "./pages/CmdbVcenter";
 import ZombieServers from "./pages/ZombieServers";
+import RightsizingPage from "./pages/RightsizingPage";
+import DiskForecastPage from "./pages/DiskForecastPage";
+import DiskAnalyticsPage from "./pages/DiskAnalyticsPage";
+import NetworkPage from "./pages/NetworkPage";
+import VCenterNewVMs from "./pages/VCenterNewVMs";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -55,6 +60,11 @@ export default function App() {
             <Route path="topology" element={<TopologyMap />} />
             <Route path="cmdb-vcenter" element={<CmdbVcenter />} />
             <Route path="zombie-servers" element={<ZombieServers />} />
+            <Route path="rightsizing"    element={<RightsizingPage />} />
+            <Route path="disk-forecast"   element={<DiskForecastPage />} />
+            <Route path="disk-analytics"  element={<DiskAnalyticsPage />} />
+            <Route path="network"         element={<NetworkPage />} />
+            <Route path="vcenter-new-vms" element={<VCenterNewVMs />} />
           </Route>
         </Routes>
       </BrowserRouter>

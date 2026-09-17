@@ -1,15 +1,20 @@
 from fastapi import APIRouter, HTTPException, Query
 from app.models.schemas import ClusterForecastPoint, ClusterForecastResponse, ClusterResponse
-from app.services import analyzer, db, metrics_store
+from app.services import analyzer, db, metrics_store, response_cache
 
 router = APIRouter(tags=["clusters"])
 
 _NOT_SYNCED = "Дані ще не синхронізовано. Натисніть «Оновити дані»."
+_CACHE_TTL  = 300
 
 
 @router.get("/clusters", response_model=ClusterResponse)
 async def get_clusters():
     """Analyze VM clusters and provide Windows Datacenter licensing optimization."""
+    cached = response_cache.get("clusters", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     clusters_cached = db.get("clusters")
     vms_cached = db.get("vms")
     if clusters_cached is None or vms_cached is None:
@@ -19,6 +24,7 @@ async def get_clusters():
     vms, _ = vms_cached
     response = analyzer.build_clusters(clusters, vms)
     response.synced_at = updated_at
+    response_cache.put("clusters", response)
     return response
 
 

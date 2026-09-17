@@ -8,12 +8,19 @@ from __future__ import annotations
 
 import re
 
+import logging
+
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from app.models.schemas import CmdbVcenterDiffItem, CmdbVcenterDiffResponse
-from app.services import db
+from app.services import db, jira_client, response_cache
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["cmdb-vcenter"])
+
+_CACHE_TTL = 300
 
 # Prefixes to strip when normalising names for fallback matching
 _PREFIX_RE = re.compile(r"^(?:vm|srv|server)-+", re.IGNORECASE)
@@ -57,6 +64,10 @@ def _str_ne(a: str | None, b: str | None) -> bool:
 
 @router.get("/cmdb-vcenter-diff", response_model=CmdbVcenterDiffResponse)
 async def get_cmdb_vcenter_diff() -> CmdbVcenterDiffResponse:
+    cached = response_cache.get("cmdb-vcenter-diff", ttl=_CACHE_TTL)
+    if cached is not None:
+        return cached
+
     vms_cached      = db.get("vms")
     phys_cached     = db.get("physical_servers")
     moid_map_cached = db.get("vm_moid_map")
@@ -173,6 +184,7 @@ async def get_cmdb_vcenter_diff() -> CmdbVcenterDiffResponse:
 
             items.append(CmdbVcenterDiffItem(
                 name=name, ci_type=ci_type,
+                jira_id=record.get("jira_id"),
                 fqdn=fqdn, primary_ip=primary_ip,
                 in_vcenter=True,
                 cmdb_vcpu=cmdb_vcpu, cmdb_vram_gb=cmdb_vram_gb,
@@ -187,6 +199,7 @@ async def get_cmdb_vcenter_diff() -> CmdbVcenterDiffResponse:
         else:
             items.append(CmdbVcenterDiffItem(
                 name=name, ci_type=ci_type,
+                jira_id=record.get("jira_id"),
                 fqdn=fqdn, primary_ip=primary_ip,
                 in_vcenter=False,
                 cmdb_vcpu=cmdb_vcpu, cmdb_vram_gb=cmdb_vram_gb,
@@ -201,7 +214,7 @@ async def get_cmdb_vcenter_diff() -> CmdbVcenterDiffResponse:
     # Sort: diffs first, then CMDB-only, then OK — alphabetically within each group
     items.sort(key=lambda i: (-i.diff_count, not i.in_vcenter, i.name.lower()))
 
-    return CmdbVcenterDiffResponse(
+    result = CmdbVcenterDiffResponse(
         total=len(items),
         matched=matched,
         cmdb_only=sum(1 for i in items if not i.in_vcenter),
@@ -212,3 +225,73 @@ async def get_cmdb_vcenter_diff() -> CmdbVcenterDiffResponse:
         items=items,
         synced_at=synced_at,
     )
+    response_cache.put("cmdb-vcenter-diff", result)
+    return result
+
+
+# ── Sync vCenter → CMDB ───────────────────────────────────────────────────────
+
+@router.post("/cmdb-vcenter-sync")
+async def sync_cmdb_from_vcenter():
+    """For every VM with parameter diffs, write vCenter values into Jira CMDB.
+
+    Only fields that actually differ are updated (vcpu, vram_gb, cluster).
+    Physical servers are skipped — vCenter is not authoritative for their hw.
+    """
+    # Build diff data (uses cache when fresh)
+    diff_data = await get_cmdb_vcenter_diff()
+
+    # Build cluster name (normalised) → Jira object ID map
+    clusters_cached = db.get("clusters")
+    clusters: list[dict] = clusters_cached[0] if clusters_cached else []
+    cluster_jira_map: dict[str, str] = {}
+    for c in clusters:
+        key = _norm_cluster(c.get("name", ""))
+        jid = str(c.get("jira_id", "")).strip()
+        if key and jid:
+            cluster_jira_map[key] = jid
+
+    updated = 0
+    skipped = 0
+    cluster_skipped = 0
+    errors: list[dict] = []
+
+    for item in diff_data.items:
+        # Only VMs with actual diffs and a known Jira ID
+        if item.ci_type != "vm" or item.diff_count == 0 or not item.jira_id:
+            skipped += 1
+            continue
+
+        try:
+            vcpu         = item.vc_vcpu    if item.vcpu_diff  else None
+            vram_gb      = item.vc_vram_gb if item.vram_diff  else None
+            cluster_jira = None
+            if item.cluster_diff and item.vc_cluster:
+                cluster_jira = cluster_jira_map.get(_norm_cluster(item.vc_cluster))
+                if not cluster_jira:
+                    log.warning("Sync: no Jira cluster ID for vCenter '%s' (vm=%s)",
+                                item.vc_cluster, item.name)
+                    cluster_skipped += 1
+
+            await jira_client.update_vm(
+                jira_id=item.jira_id,
+                vcpu=vcpu,
+                vram_gb=vram_gb,
+                cluster_jira_id=cluster_jira,
+            )
+            log.info("Sync: updated '%s' (jira_id=%s) vcpu=%s vram=%s cluster=%s",
+                     item.name, item.jira_id, vcpu, vram_gb, cluster_jira)
+            updated += 1
+        except Exception:
+            log.exception("Sync: failed to update '%s'", item.name)
+            errors.append({"name": item.name, "error": "Помилка оновлення в Jira"})
+
+    # Invalidate diff cache so the next GET reflects the updated values
+    response_cache.invalidate_prefix("cmdb-vcenter-diff")
+
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "cluster_skipped": cluster_skipped,
+        "errors": errors,
+    }
