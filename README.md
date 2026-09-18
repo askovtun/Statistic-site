@@ -136,15 +136,18 @@ CORS_ORIGINS=http://localhost:5173
 
 ## Безпека
 
+> **Деплой:** `frontend/public/web.config` копіюється у `dist/` при `npm run build`.
+> Не замінюй цей файл в IIS вручну — зміни зробити в репо і перезібрати.
+
 ### Стан на 2026-09-18
 
 | Шар | Статус | Деталі |
 |-----|--------|--------|
-| Windows Auth (IIS) | ✅ Налаштовано | `web.config`: anonymous вимкнено, Windows Auth увімкнено |
+| Windows Auth (IIS) | ✅ В репо | `frontend/public/web.config`: anonymous вимкнено, Windows Auth увімкнено |
 | ARR reverse proxy | ⏳ Потрібна ручна дія | Встановити ARR 3.0 + увімкнути proxy в IIS Manager |
 | Backend loopback | ✅ Зроблено | uvicorn слухає `127.0.0.1:8000` (не `0.0.0.0`) |
 | Firewall порт 8000 | ⏳ Потрібна ручна дія | `New-NetFirewallRule` (потребує admin) |
-| Security headers | ✅ Зроблено | CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy |
+| Security headers | ✅ В репо | CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy — у `public/web.config` |
 | HTTPS/TLS | ❌ Відсутній | Трафік йде по HTTP — розглянути Let's Encrypt або корпоративний CA |
 
 ### Встановлення ARR (один раз, від адміністратора)
@@ -233,6 +236,16 @@ pytest tests/ -v
 **Рішення:** GitHub Actions запускає ruff + pytest (backend) і npm build (frontend). Deploy — ручний (copy to IIS).
 
 **Чому:** Production IIS на Windows-машині в корпоративній мережі — автодеплой з GitHub потребував би self-hosted runner або VPN. Поки що не пріоритет.
+
+---
+
+### 2026-09-18 — web.config безпеки належить у `frontend/public/`, не в IIS вручну
+
+**Проблема:** Попередній `frontend/public/web.config` в репо не мав ані Windows Auth, ані security headers, ані ARR proxy-правила. Налаштований `C:\inetpub\wwwroot\Statistic-site\web.config` існував лише на сервері — поза git. Кожен `npm run build` + деплой перезаписав би всі security-налаштування голим файлом.
+
+**Рішення:** Повний конфіг (Windows Auth, security headers, ARR rule, SPA fallback) перенесено в `frontend/public/web.config`. Тепер при кожному `npm run build` він потрапляє в `dist/` і деплоїться разом з фронтендом.
+
+**Правило:** Жодних ручних правок `web.config` на сервері без відповідного коміту в репо.
 
 ---
 
