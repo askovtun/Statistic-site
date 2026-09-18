@@ -605,6 +605,32 @@ class SecurityDashboardResponse(BaseModel):
     synced_at: str | None = None
 
 
+# ── Windows Server License Report ────────────────────────────────────────────
+
+class LicenseHostItem(BaseModel):
+    host_name: str
+    cluster: str | None = None
+    cpu_cores: int
+    core_packs: int
+    windows_vm_count: int
+    windows_vms: list[str] = []
+    dc_cost: float
+    std_cost: float
+    recommendation: Literal["datacenter", "standard"]
+    savings: float
+
+
+class LicenseReportResponse(BaseModel):
+    hosts: list[LicenseHostItem] = []
+    total_hosts: int = 0
+    total_dc_cost: float = 0.0
+    total_standard_cost: float = 0.0
+    total_savings: float = 0.0
+    dc_price_per_2core: float = 769.0
+    std_price_per_2core: float = 244.0
+    synced_at: str | None = None
+
+
 # ── Disk Space Forecast ───────────────────────────────────────────────────────
 
 class DiskReclamationItem(BaseModel):

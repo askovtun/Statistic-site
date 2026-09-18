@@ -49,8 +49,9 @@ class Settings(BaseSettings):
     disk_undersized_threshold: float = 85.0
     cluster_split_threshold: float = 30.0
 
-    # Windows Server Datacenter licensing
-    dc_license_price_usd: float = 769.0  # 2-core pack
+    # Windows Server licensing (per 2-core pack)
+    dc_license_price_usd: float = 769.0
+    standard_license_price_usd: float = 244.0
 
     # HTTP
     ssl_verify: bool = False

@@ -25,6 +25,7 @@ import DiskForecastPage from "./pages/DiskForecastPage";
 import DiskAnalyticsPage from "./pages/DiskAnalyticsPage";
 import NetworkPage from "./pages/NetworkPage";
 import VCenterNewVMs from "./pages/VCenterNewVMs";
+import LicenseReport from "./pages/LicenseReport";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -65,6 +66,7 @@ export default function App() {
             <Route path="disk-analytics"  element={<DiskAnalyticsPage />} />
             <Route path="network"         element={<NetworkPage />} />
             <Route path="vcenter-new-vms" element={<VCenterNewVMs />} />
+            <Route path="license-report"  element={<LicenseReport />} />
           </Route>
         </Routes>
       </BrowserRouter>

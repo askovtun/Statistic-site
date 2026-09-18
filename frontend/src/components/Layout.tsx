@@ -55,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/security",        label: "Безпека",            icon: "🛡️" },
       { to: "/os-report",       label: "Операційні ОС",      icon: "🖥" },
       { to: "/zombie-servers",  label: "Зомбі-сервери",      icon: "💀" },
+      { to: "/license-report",  label: "Ліцензії WS",        icon: "🪪" },
     ],
   },
   {

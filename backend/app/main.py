@@ -7,9 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     capacity, clusters, cmdb_stats, cmdb_vcenter, comparison, decommission, decommissioned,
-    disk_analytics, disk_forecast, monitoring_coverage, network_channels, os_report,
-    physical_servers, resources, security, sync, topology, uptime, vcenter, vcenter_new_vms,
-    vm_changes, zabbix_problems, zombie_servers,
+    disk_analytics, disk_forecast, license_report, monitoring_coverage, network_channels,
+    os_report, physical_servers, resources, security, sync, topology, uptime, vcenter,
+    vcenter_new_vms, vm_changes, zabbix_problems, zombie_servers,
 )
 from app.config import settings
 from app.services import sync_service
@@ -73,6 +73,7 @@ app.include_router(disk_forecast.router, prefix="/api")
 app.include_router(disk_analytics.router, prefix="/api")
 app.include_router(network_channels.router, prefix="/api")
 app.include_router(vcenter_new_vms.router, prefix="/api")
+app.include_router(license_report.router, prefix="/api")
 
 
 @app.get("/api/health", tags=["health"])

@@ -829,6 +829,32 @@ export interface VCenterNewVMsResponse {
   synced_at: string | null;
 }
 
+// ── License Report ────────────────────────────────────────────────────────────
+
+export interface LicenseHostItem {
+  host_name: string;
+  cluster: string | null;
+  cpu_cores: number;
+  core_packs: number;
+  windows_vm_count: number;
+  windows_vms: string[];
+  dc_cost: number;
+  std_cost: number;
+  recommendation: "datacenter" | "standard";
+  savings: number;
+}
+
+export interface LicenseReportResponse {
+  hosts: LicenseHostItem[];
+  total_hosts: number;
+  total_dc_cost: number;
+  total_standard_cost: number;
+  total_savings: number;
+  dc_price_per_2core: number;
+  std_price_per_2core: number;
+  synced_at: string | null;
+}
+
 export interface ImportResult {
   imported: number;
   skipped: number;
@@ -911,6 +937,7 @@ export const api = {
   vcenterNewVMs: () => apiFetch<VCenterNewVMsResponse>("/api/vcenter-new-vms"),
   importVCenterVMs: (moids: string[]) =>
     apiPostJson<ImportResult>("/api/vcenter-new-vms/import", { moids }),
+  licenseReport: () => apiFetch<LicenseReportResponse>("/api/license-report"),
   channelHosts: () => apiFetch<ChannelHostsResponse>("/api/network/channels/hosts"),
   channelHistory: (hostid: string, ifname: string, itemidIn: string, itemidOut: string | null, hours: number) => {
     const p = new URLSearchParams({ hostid, ifname, itemid_in: itemidIn, hours: String(hours) });

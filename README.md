@@ -27,6 +27,7 @@
 | CMDB vs Zabbix | Порівняння інвентарю CMDB і Zabbix — "тільки в CMDB" / "тільки в Zabbix" |
 | CMDB vs vCenter | Розбіжності vCPU/vRAM/Cluster між CMDB і vCenter; кнопка синхронізації CMDB ← vCenter |
 | Security Dashboard | EOL сервери, ОС без версії, ОС невідомо, VM без моніторингу |
+| License Report | Ліцензування Windows Server: DC vs Standard по ESXi-хостах, потенційна економія |
 | OS Report | Розподіл ОС по версіях і статусах lifecycle |
 | Clusters | Утилізація кластерів vCenter, сховища, рекомендації щодо балансування |
 | Capacity Planning | Прогноз ємності CPU/RAM на кластерах |
@@ -232,6 +233,21 @@ pytest tests/ -v
 **Рішення:** GitHub Actions запускає ruff + pytest (backend) і npm build (frontend). Deploy — ручний (copy to IIS).
 
 **Чому:** Production IIS на Windows-машині в корпоративній мережі — автодеплой з GitHub потребував би self-hosted runner або VPN. Поки що не пріоритет.
+
+---
+
+### 2026-09-18 — Windows Server License Report: DC vs Standard по ESXi-хостах
+
+**Рішення:** Новий звіт `/license-report` аналізує кожен ESXi-хост і рахує, що дешевше — Datacenter (покриває всі VM) або Standard (покриває 2 VM на ліцензійний набір).
+
+**Формула:**
+- DC вартість = `ceil(cores / 2) × dc_price` (за замовчуванням `$769 / 2-core pack`)
+- Standard вартість = `ceil(vm_count / 2) × ceil(cores / 2) × std_price` (`$244 / 2-core pack`)
+- Якщо Standard < DC → рекомендуємо Standard, показуємо економію.
+
+**Де налаштувати ціни:** `backend/.env` або `config.py` — `dc_license_price_usd` і `standard_license_price_usd`.
+
+**Дані:** `vcenter_vms` (поле `os_full_name` + `runtime_host`) + `vcenter_hosts` (поле `num_cpu_cores`).
 
 ---
 
