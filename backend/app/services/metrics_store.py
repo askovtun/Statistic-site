@@ -697,6 +697,118 @@ def get_disk_daily_trend_batch(
     return result
 
 
+def get_fleet_daily_perf(period_days: int) -> list[dict]:
+    """Daily fleet-wide weighted avg CPU% and RAM% from all Zabbix VM hosts.
+
+    RAM is computed from whichever metric is available per host-day:
+    - vm.memory.utilization (direct %)  — preferred
+    - vm.memory.size[used] / vm.memory.size[total] pair  — standard agent template
+    Both sources are merged; the direct-% source takes precedence on overlap.
+    """
+    cutoff = int(time.time()) - period_days * 86400
+    with db._connect() as conn:
+        # CPU + direct RAM% in one pass
+        rows_direct = conn.execute(
+            "SELECT (hour_clock / 86400) * 86400 AS day_ts, metric, "
+            "SUM(avg * num) / SUM(num) AS w_avg "
+            "FROM metric_hourly "
+            "WHERE source = 'zabbix' AND metric IN (?, ?) "
+            "AND hour_clock >= ? AND num > 0 "
+            "GROUP BY day_ts, metric ORDER BY day_ts",
+            (ITEM_CPU_UTIL, ITEM_MEM_UTILIZATION, cutoff),
+        ).fetchall()
+
+        # Fleet RAM from used/total pair: weighted avg used / weighted avg total * 100
+        rows_pair = conn.execute(
+            "SELECT (hour_clock / 86400) * 86400 AS day_ts, metric, "
+            "SUM(avg * num) AS w_sum, SUM(num) AS total_num "
+            "FROM metric_hourly "
+            "WHERE source = 'zabbix' AND metric IN (?, ?) "
+            "AND hour_clock >= ? AND num > 0 "
+            "GROUP BY day_ts, metric ORDER BY day_ts",
+            (ITEM_MEM_USED, ITEM_MEM_TOTAL, cutoff),
+        ).fetchall()
+
+    cpu_by_day: dict[int, float] = {}
+    ram_by_day: dict[int, float] = {}
+
+    for day_ts, metric, w_avg in rows_direct:
+        d = int(day_ts)
+        if metric == ITEM_CPU_UTIL:
+            cpu_by_day[d] = w_avg
+        elif metric == ITEM_MEM_UTILIZATION:
+            ram_by_day[d] = w_avg
+
+    # Aggregate used/total per day, then compute %
+    used_sum: dict[int, float] = {}
+    used_cnt: dict[int, float] = {}
+    total_sum: dict[int, float] = {}
+    total_cnt: dict[int, float] = {}
+    for day_ts, metric, w_sum, total_num in rows_pair:
+        d = int(day_ts)
+        if metric == ITEM_MEM_USED:
+            used_sum[d] = used_sum.get(d, 0.0) + w_sum
+            used_cnt[d] = used_cnt.get(d, 0.0) + total_num
+        elif metric == ITEM_MEM_TOTAL:
+            total_sum[d] = total_sum.get(d, 0.0) + w_sum
+            total_cnt[d] = total_cnt.get(d, 0.0) + total_num
+
+    for d in set(used_cnt) & set(total_cnt):
+        if d in ram_by_day:
+            continue  # direct % already set — prefer it
+        avg_used = used_sum[d] / used_cnt[d]
+        avg_total = total_sum[d] / total_cnt[d]
+        if avg_total > 0:
+            ram_by_day[d] = avg_used / avg_total * 100.0
+
+    all_days = sorted(set(cpu_by_day) | set(ram_by_day))
+    return [
+        {
+            "timestamp": d,
+            "cpu_avg": round(cpu_by_day[d], 1) if d in cpu_by_day else None,
+            "ram_avg": round(ram_by_day[d], 1) if d in ram_by_day else None,
+        }
+        for d in all_days
+    ]
+
+
+def get_cpu_consistency_batch(
+    hostid_map: dict[str, str],
+    period_days: int,
+    cpu_threshold: float = 3.0,
+) -> dict[str, float | None]:
+    """What % of days with data had avg CPU below threshold per VM.
+
+    Near 100 means the VM was consistently idle throughout the period.
+    """
+    if not hostid_map:
+        return {}
+
+    cutoff = int(time.time()) - period_days * 86400
+    inv = {v: k for k, v in hostid_map.items()}
+    hostids = list(hostid_map.values())
+    ph = ",".join("?" * len(hostids))
+
+    with db._connect() as conn:
+        rows = conn.execute(
+            f"SELECT hostid, "
+            f"COUNT(DISTINCT (hour_clock / 86400)) AS total_days, "
+            f"COUNT(DISTINCT CASE WHEN avg < ? THEN (hour_clock / 86400) END) AS low_days "
+            f"FROM metric_hourly "
+            f"WHERE source = 'zabbix' AND metric = ? AND hostid IN ({ph}) "
+            f"AND hour_clock >= ? AND num > 0 "
+            f"GROUP BY hostid",
+            [cpu_threshold, ITEM_CPU_UTIL, *hostids, cutoff],
+        ).fetchall()
+
+    result: dict[str, float | None] = {}
+    for hostid, total_days, low_days in rows:
+        vm_name = inv.get(hostid)
+        if vm_name and total_days > 0:
+            result[vm_name] = round(low_days / total_days * 100, 1)
+    return result
+
+
 def prune(max_age_days: int = 95) -> None:
     cutoff = int(time.time()) - max_age_days * 86400
     with db._connect() as conn:

@@ -546,17 +546,20 @@ export interface CmdbVcenterSyncResult {
   updated: number;
   skipped: number;
   cluster_skipped: number;
+  clusters_created: number;
   errors: { name: string; error: string }[];
 }
 
 export interface CmdbVcenterDiffItem {
   name: string;
-  ci_type: "vm" | "physical";
+  ci_type: "vm" | "physical" | "hypervisor";
   jira_id: string | null;
   fqdn: string | null;
   primary_ip: string | null;
   in_vcenter: boolean;
   cmdb_vcpu: number | null;
+  cmdb_cpu_count: number | null;
+  cmdb_cpu_cores: number | null;
   cmdb_vram_gb: number | null;
   cmdb_cluster: string | null;
   cmdb_status: string | null;
@@ -566,9 +569,13 @@ export interface CmdbVcenterDiffItem {
   vc_cluster: string | null;
   vc_power_state: string | null;
   vc_os: string | null;
+  vc_ip: string | null;
+  vc_hostname: string | null;
   vcpu_diff: boolean;
   vram_diff: boolean;
   cluster_diff: boolean;
+  ip_diff: boolean;
+  fqdn_diff: boolean;
   diff_count: number;
 }
 
@@ -580,6 +587,8 @@ export interface CmdbVcenterDiffResponse {
   vcpu_diff_count: number;
   vram_diff_count: number;
   cluster_diff_count: number;
+  ip_diff_count: number;
+  fqdn_diff_count: number;
   items: CmdbVcenterDiffItem[];
   synced_at: string | null;
 }
@@ -717,6 +726,8 @@ export interface CapacityClusterItem {
   free_storage_gb: number | null;
   storage_used_pct: number | null;
   status: "ok" | "warning" | "critical" | "unknown";
+  cpu_days_to_80: number | null;
+  ram_days_to_80: number | null;
 }
 
 export interface CapacityResponse {
@@ -788,6 +799,7 @@ export interface ZombieServerItem {
   avg_ram_pct: number | null;
   max_ram_pct: number | null;
   data_coverage_pct: number | null;
+  consistency_pct: number | null;
   in_zabbix: boolean;
   in_vcenter: boolean;
   zombie_score: number;
@@ -809,22 +821,27 @@ export interface ZombieServerResponse {
 // ── vCenter New VMs ───────────────────────────────────────────────────────────
 
 export interface VCenterNewVM {
+  kind: "vm" | "hypervisor";
   moid: string;
   vc_name: string;
   cmdb_name: string;
   guest_hostname: string | null;
   guest_ip: string | null;
+  all_ips?: string[];
   power_state: string | null;
   vcpu: number | null;
   vram_gb: number | null;
   cluster: string | null;
   os_full_name: string | null;
+  storage_tb?: number | null;
   created_at: string | null;
 }
 
 export interface VCenterNewVMsResponse {
   total_vcenter: number;
+  total_hosts: number;
   not_in_cmdb: number;
+  new_hypervisors: number;
   items: VCenterNewVM[];
   synced_at: string | null;
 }
@@ -859,6 +876,355 @@ export interface ImportResult {
   imported: number;
   skipped: number;
   errors: { name: string; error: string }[];
+}
+
+// ── Zabbix Incident Trends ────────────────────────────────────────────────────
+
+export interface ZabbixTrendWeek {
+  week_key: string;
+  week_start: number;
+  disaster: number;
+  high: number;
+  average: number;
+  warning: number;
+  information: number;
+  not_classified: number;
+  total: number;
+}
+
+export interface ZabbixTrendsResponse {
+  weeks: ZabbixTrendWeek[];
+  weeks_requested: number;
+  total_problems: number;
+  disaster: number;
+  high: number;
+  average: number;
+  warning: number;
+  information: number;
+  generated_at: string;
+}
+
+// ── CMDB Completeness ─────────────────────────────────────────────────────────
+
+export interface CmdbCompletenessField {
+  key: string;
+  label: string;
+  filled: number;
+  total: number;
+  pct: number;
+}
+
+export interface CmdbCompletenessType {
+  ci_type: string;
+  label: string;
+  total: number;
+  fields: CmdbCompletenessField[];
+  overall_pct: number;
+}
+
+export interface CmdbCompletenessResponse {
+  types: CmdbCompletenessType[];
+  synced_at: string | null;
+}
+
+// ── Power State Report ────────────────────────────────────────────────────────
+
+export interface PowerStateVm {
+  name: string;
+  cmdb_status: string | null;
+  cluster: string | null;
+  vcpu: number | null;
+  vram_gb: number | null;
+  power_state: string;
+  boot_time: string | null;
+}
+
+export interface PowerStateResponse {
+  total_off: number;
+  not_decommissioned: number;
+  by_cluster: Record<string, number>;
+  vms: PowerStateVm[];
+  synced_at: string | null;
+}
+
+// ── Infrastructure Growth Trend ───────────────────────────────────────────────
+
+export interface InfraGrowthPoint {
+  date: string;
+  vm_total: number;
+  physical_total: number;
+}
+
+export interface InfraGrowthResponse {
+  points: InfraGrowthPoint[];
+  current_vms: number;
+  current_physical: number;
+  days: number;
+}
+
+// ── VM Age ────────────────────────────────────────────────────────────────────
+
+export interface VmAgeItem {
+  name: string;
+  cluster: string | null;
+  cmdb_status: string | null;
+  power_state: string | null;
+  created_at: string | null;
+  age_days: number | null;
+  vcpu: number | null;
+  vram_gb: number | null;
+}
+
+export interface VmAgeResponse {
+  vms: VmAgeItem[];
+  total: number;
+  with_create_date: number;
+  oldest_days: number | null;
+  synced_at: string | null;
+}
+
+// ── Host Distribution ─────────────────────────────────────────────────────────
+
+export interface HostDistItem {
+  host_name: string;
+  cluster: string | null;
+  vm_count: number;
+  cpu_usage_pct: number | null;
+  mem_usage_pct: number | null;
+  num_cpu_cores: number | null;
+  memory_gb: number | null;
+}
+
+export interface HostDistResponse {
+  hosts: HostDistItem[];
+  total_vms_mapped: number;
+  synced_at: string | null;
+}
+
+// ── Applications & IT Services ────────────────────────────────────────────────
+
+export interface AppItem {
+  jira_id: string;
+  name: string;
+  status: string | null;
+  ci_type: string;
+}
+
+export interface ApplicationsResponse {
+  applications: AppItem[];
+  it_services: AppItem[];
+  total_apps: number;
+  total_services: number;
+  fetched_at: string;
+}
+
+// ── Network Inventory ─────────────────────────────────────────────────────────
+
+export interface NetworkDeviceItem {
+  jira_id: string;
+  name: string;
+  device_type: string;
+  location: string | null;
+  status: string | null;
+}
+
+export interface NetworkInventoryResponse {
+  devices: NetworkDeviceItem[];
+  by_type: Record<string, number>;
+  by_location: Record<string, number>;
+  total: number;
+  fetched_at: string;
+}
+
+// ── Server Rooms ──────────────────────────────────────────────────────────────
+
+export interface ServerRoomItem {
+  jira_id: string;
+  name: string;
+  status: string | null;
+  site: string | null;
+}
+
+export interface ServerRoomsResponse {
+  server_rooms: ServerRoomItem[];
+  total: number;
+  fetched_at: string;
+}
+
+// ── Backup Coverage ───────────────────────────────────────────────────────────
+
+export interface BackupCoverageItem {
+  name: string;
+  ci_type: string;
+  has_backup: boolean;
+  backup_group: string | null;
+  fqdn: string | null;
+  cluster: string | null;
+  cmdb_status: string | null;
+}
+
+export interface BackupCoverageResponse {
+  total: number;
+  covered: number;
+  not_covered: number;
+  coverage_pct: number;
+  items: BackupCoverageItem[];
+  fetched_at: string;
+}
+
+// ── Datastores ────────────────────────────────────────────────────────────────
+
+export interface DatastoreItem {
+  name: string;
+  datastore_type: string | null;
+  capacity_gb: number | null;
+  free_gb: number | null;
+  used_pct: number | null;
+  accessible: boolean;
+  cluster: string | null;
+}
+
+export interface DatastoresResponse {
+  datastores: DatastoreItem[];
+  total: number;
+  total_capacity_gb: number;
+  total_free_gb: number;
+  overall_used_pct: number | null;
+  fetched_at: string | null;
+}
+
+// ── Fleet Trends ──────────────────────────────────────────────────────────────
+
+export interface FleetDailyPerfPoint {
+  timestamp: number;
+  cpu_avg: number | null;
+  ram_avg: number | null;
+}
+
+export interface WeeklyFleetChange {
+  week: string;
+  week_start: number;
+  added: number;
+  removed: number;
+  cluster_changes: number;
+}
+
+export interface FleetTrendsResponse {
+  daily_perf: FleetDailyPerfPoint[];
+  weekly_changes: WeeklyFleetChange[];
+  total_migrations_90d: number;
+  synced_at: string | null;
+}
+
+// ── VM Migrations ─────────────────────────────────────────────────────────────
+
+export interface VmMigrationItem {
+  id: number;
+  vm_name: string;
+  from_cluster: string | null;
+  to_cluster: string | null;
+  detected_at: string;
+}
+
+export interface ClusterFlowItem {
+  from_cluster: string;
+  to_cluster: string;
+  count: number;
+}
+
+export interface WeeklyMigrationCount {
+  week: string;
+  week_start: number;
+  count: number;
+}
+
+export interface TopMigratedVm {
+  name: string;
+  migration_count: number;
+  clusters: string[];
+}
+
+export interface VmMigrationsResponse {
+  total: number;
+  period_days: number;
+  top_migrated_vms: TopMigratedVm[];
+  cluster_flow: ClusterFlowItem[];
+  weekly_counts: WeeklyMigrationCount[];
+  items: VmMigrationItem[];
+}
+
+// ── CVE Vulnerability Scanner ──────────────────────────────────────────────────
+
+export interface VulnDbStatus {
+  is_ready: boolean;
+  db_path: string;
+  total_cves: number;
+  last_updated: string | null;
+  severity_counts: Record<string, number>;
+  error?: string;
+}
+
+export interface VulnServerItem {
+  name: string;
+  os_string: string | null;
+  cluster: string | null;
+  fqdn: string | null;
+  primary_ip: string | null;
+}
+
+export interface VulnServersResponse {
+  total: number;
+  items: VulnServerItem[];
+  synced_at: string | null;
+}
+
+export interface CveItem {
+  id: string;
+  description: string;
+  cvss_score: number | null;
+  cvss_severity: string | null;
+  cvss_vector: string | null;
+  attack_vector: string | null;
+  published: string | null;
+  modified: string | null;
+}
+
+export interface ScanServerResult {
+  server_name: string;
+  os_string: string | null;
+  matched_tokens: string[];
+  cve_count: number;
+  cves: CveItem[];
+}
+
+export interface ScanJobStatus {
+  job_id: string;
+  status: "running" | "done" | "error";
+  progress: number;
+  total: number;
+  results: ScanServerResult[];
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface StartScanResponse {
+  job_id: string;
+  total: number;
+}
+
+export interface NvdUpdateStatus {
+  status: "idle" | "running" | "done" | "error";
+  mode: string | null;
+  page: number;
+  total_pages: number | null;
+  cves_done: number;
+  total_results: number | null;
+  message: string | null;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  result: { total_inserted: number; total_results: number; pages: number } | null;
 }
 
 export const api = {
@@ -938,10 +1304,80 @@ export const api = {
   importVCenterVMs: (moids: string[]) =>
     apiPostJson<ImportResult>("/api/vcenter-new-vms/import", { moids }),
   licenseReport: () => apiFetch<LicenseReportResponse>("/api/license-report"),
+  fleetTrends: () => apiFetch<FleetTrendsResponse>("/api/fleet-trends"),
+  vmMigrations: (days?: number) =>
+    apiFetch<VmMigrationsResponse>(`/api/vm-migrations${days ? `?days=${days}` : ""}`),
   channelHosts: () => apiFetch<ChannelHostsResponse>("/api/network/channels/hosts"),
   channelHistory: (hostid: string, ifname: string, itemidIn: string, itemidOut: string | null, hours: number) => {
     const p = new URLSearchParams({ hostid, ifname, itemid_in: itemidIn, hours: String(hours) });
     if (itemidOut) p.set("itemid_out", itemidOut);
     return apiFetch<ChannelHistoryResponse>(`/api/network/channels/history?${p}`);
   },
+  vulnStatus: () => apiFetch<VulnDbStatus>("/api/vuln/status"),
+  vulnServers: () => apiFetch<VulnServersResponse>("/api/vuln/servers"),
+  startScan: (serverNames: string[], minScore = 0) =>
+    apiPostJson<StartScanResponse>("/api/vuln/scan", { server_names: serverNames, min_score: minScore }),
+  scanJob: (jobId: string) => apiFetch<ScanJobStatus>(`/api/vuln/scan/${jobId}`),
+  startNvdUpdate: (mode: "update" | "full" = "update", days = 30) =>
+    apiPostJson<NvdUpdateStatus>("/api/vuln/nvd-update", { mode, days }),
+  nvdUpdateStatus: () => apiFetch<NvdUpdateStatus>("/api/vuln/nvd-update"),
+  zabbixTrends: (weeks?: number) =>
+    apiFetch<ZabbixTrendsResponse>(`/api/zabbix/trends${weeks ? `?weeks=${weeks}` : ""}`),
+  cmdbCompleteness: () => apiFetch<CmdbCompletenessResponse>("/api/cmdb/completeness"),
+  powerState: () => apiFetch<PowerStateResponse>("/api/power-state"),
+  infraGrowth: (days?: number) =>
+    apiFetch<InfraGrowthResponse>(`/api/infra/growth${days ? `?days=${days}` : ""}`),
+  vmAge: () => apiFetch<VmAgeResponse>("/api/vm/age"),
+  hostDistribution: () => apiFetch<HostDistResponse>("/api/vcenter/host-distribution"),
+  cmdbApplications: () => apiFetch<ApplicationsResponse>("/api/cmdb/applications"),
+  cmdbNetwork: () => apiFetch<NetworkInventoryResponse>("/api/cmdb/network"),
+  serverRooms: () => apiFetch<ServerRoomsResponse>("/api/cmdb/server-rooms"),
+  backupCoverage: () => apiFetch<BackupCoverageResponse>("/api/backup/coverage"),
+  datastores: () => apiFetch<DatastoresResponse>("/api/vcenter/datastores"),
+  refreshDatastores: () => apiPost<{ refreshed: boolean; total: number }>("/api/vcenter/datastores/refresh"),
+  jiraCiLinks: (days?: number) =>
+    apiFetch<JiraCiLinksResponse>(`/api/jira-ci-links${days ? `?days=${days}` : ""}`),
 };
+
+// ── Jira CI Links ─────────────────────────────────────────────────────────────
+
+export interface JiraCiDatePoint {
+  date: string;
+  issues_created: number;
+  ci_count: number;
+  cumulative: number;
+}
+
+export interface JiraCiAssigneeRow {
+  name: string;
+  issues: number;
+  ci_count: number;
+  last_activity: string;
+}
+
+export interface JiraCiProjectRow {
+  project: string;
+  issues: number;
+  ci_count: number;
+}
+
+export interface JiraCiIssueRow {
+  key: string;
+  summary: string;
+  assignee: string;
+  project: string;
+  created: string;
+  ci_items: string[];
+  ci_count: number;
+}
+
+export interface JiraCiLinksResponse {
+  total_issues: number;
+  total_ci_count: number;
+  active_specialists: number;
+  by_date: JiraCiDatePoint[];
+  by_assignee: JiraCiAssigneeRow[];
+  by_project: JiraCiProjectRow[];
+  issues: JiraCiIssueRow[];
+  jira_url: string;
+}

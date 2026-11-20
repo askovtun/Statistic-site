@@ -77,6 +77,7 @@ async def get_zombie_servers(
     vc_map = {n: vm_moid_map[n]   for n in all_vm_names if n in vm_moid_map}
 
     metrics_by_vm = metrics_store.get_zombie_metrics_batch(zb_map, vc_map, period_days)
+    consistency_by_vm = metrics_store.get_cpu_consistency_batch(zb_map, period_days)
 
     # ── Analyse each VM ───────────────────────────────────────────────────────
     items: list[ZombieServerItem] = []
@@ -154,6 +155,7 @@ async def get_zombie_servers(
             avg_ram_pct=round(ram_avg, 1) if ram_avg is not None else None,
             max_ram_pct=round(ram_max, 1) if ram_max is not None else None,
             data_coverage_pct=coverage,
+            consistency_pct=consistency_by_vm.get(name),
             in_zabbix=bool(hostid),
             in_vcenter=bool(vc_vm),
             zombie_score=score,

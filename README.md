@@ -41,6 +41,7 @@
 | Topology Map | Граф залежностей CMDB (ReactFlow) |
 | Decommission | VM позначені до деактивації |
 | Network Channels | Аналіз мережевих каналів |
+| **CVE Scanner** | **Сканування вразливостей ОС за базою NVD: вибір серверів, прогрес, результати по severity, PDF** |
 
 ---
 
@@ -60,7 +61,8 @@
 
 **Backend:** Python 3.12, FastAPI, uvicorn, httpx, pyVmomi, pydantic-settings  
 **Frontend:** React 19, TypeScript, Vite 8, TailwindCSS v4, @tanstack/react-query, recharts, xlsx (SheetJS), @xyflow/react  
-**Кеш:** SQLite (`backend/data/cache.db`) + in-memory mirror; `response_cache` (TTL 300с) для ендпоінтів
+**Кеш:** SQLite (`backend/data/cache.db`) + in-memory mirror; `response_cache` (TTL 300с) для ендпоінтів  
+**NVD CVE DB:** SQLite `backend/nvd.db` — завантажується вручну: `python download_nvd.py` (~13 хв, ~250K CVE); інкрементальне оновлення: `python download_nvd.py --update`
 
 ---
 
@@ -246,6 +248,20 @@ pytest tests/ -v
 **Рішення:** Повний конфіг (Windows Auth, security headers, ARR rule, SPA fallback) перенесено в `frontend/public/web.config`. Тепер при кожному `npm run build` він потрапляє в `dist/` і деплоїться разом з фронтендом.
 
 **Правило:** Жодних ручних правок `web.config` на сервері без відповідного коміту в репо.
+
+---
+
+### 2026-10 — CVE Scanner: NVD локально, OS з vCenter VMware Tools
+
+**Рішення:** Сканер вразливостей (`/vuln-scanner`) не звертається до зовнішніх API під час сканування — використовує локальну SQLite `backend/nvd.db`, завантажену заздалегідь через `download_nvd.py`.
+
+**OS для серверів:** береться з `vCenter guest.guestFullName` (VMware Tools) → поле `os_full_name` у кеші `vcenter_vms`. Якщо Tools не встановлено або не повертає версію — fallback на `os_family` з CMDB.
+
+**Пошук CVE:** OS-рядок → regex-mapping → CPE-токени (`microsoft:windows_server_2019` тощо) → `LIKE '%token%'` по полю `cpe_keywords` у SQLite. Підтримуються: Windows Server 2003–2022, Ubuntu 16–22, Debian 10–12, CentOS 7–8, RHEL 7–9, Oracle Linux, SUSE, FreeBSD, ESXi.
+
+**Архітектура:** async FastAPI endpoints (`/api/vuln/*`) + in-memory job store. Сканування у фоновому завданні (`asyncio.create_task`), фронтенд полінгує прогрес кожні 800 мс.
+
+**Першочергова дія:** `cd backend && python download_nvd.py` (один раз ~13 хв; потім `--update` щомісяця).
 
 ---
 

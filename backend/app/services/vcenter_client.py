@@ -411,7 +411,7 @@ def _list_hosts_sync() -> list[dict]:
         except Exception:
             log.warning("Could not fetch Datacenter→host mapping")
 
-        # Pass 3: ESXi host hardware + quickStats
+        # Pass 3: ESXi host hardware + quickStats + network + OS version
         host_filter = vim.PropertyFilterSpec(
             objectSet=[obj_spec],
             propSet=[vim.PropertySpec(
@@ -419,14 +419,27 @@ def _list_hosts_sync() -> list[dict]:
                 pathSet=[
                     "name",
                     "summary.hardware.numCpuCores",
+                    "summary.hardware.numCpuPkgs",
                     "summary.hardware.cpuMhz",
                     "summary.hardware.memorySize",
+                    "summary.hardware.vendor",
+                    "summary.hardware.model",
+                    "summary.hardware.cpuModel",
+                    "summary.hardware.numNics",
                     "summary.runtime.powerState",
                     "summary.quickStats.overallCpuUsage",
                     "summary.quickStats.overallMemoryUsage",
+                    "summary.config.product.fullName",
+                    "hardware.systemInfo.serialNumber",
+                    "hardware.biosInfo.biosVersion",
+                    "hardware.biosInfo.releaseDate",
+                    "config.network.vnic",
                 ],
             )],
         )
+
+        host_storage_bytes: dict[str, int] = {}  # placeholder; storage not fetched to avoid SOAP overhead
+
         hosts: list[dict] = []
         for obj in pc.RetrieveContents([host_filter]):
             pd = {p.name: p.val for p in obj.propSet}
@@ -440,6 +453,51 @@ def _list_hosts_sync() -> list[dict]:
             mem_use_mb = pd.get("summary.quickStats.overallMemoryUsage") or 0
             cluster = host_to_cluster.get(moid)
             datacenter = host_to_dc.get(moid)
+
+            # Primary IP: Management Network vmkernel → fallback vmk0
+            vnics = pd.get("config.network.vnic") or []
+            primary_ip: str | None = None
+            all_ips: list[str] = []
+            for vnic in vnics:
+                ip = (vnic.spec.ip.ipAddress if vnic.spec and vnic.spec.ip else None)
+                if ip and ip not in all_ips:
+                    all_ips.append(ip)
+                pg = (vnic.spec.portgroup or "") if vnic.spec else ""
+                if primary_ip is None and "management" in pg.lower() and ip:
+                    primary_ip = ip
+            if primary_ip is None:
+                for vnic in vnics:
+                    if getattr(vnic, "device", "") == "vmk0":
+                        primary_ip = (vnic.spec.ip.ipAddress if vnic.spec and vnic.spec.ip else None)
+                        break
+
+            # OS / ESXi version string
+            os_version = pd.get("summary.config.product.fullName")
+
+            # Hardware make/model/serial/cpu
+            vendor        = pd.get("summary.hardware.vendor") or ""
+            model         = pd.get("summary.hardware.model") or ""
+            cpu_model     = pd.get("summary.hardware.cpuModel") or ""
+            serial_number = pd.get("hardware.systemInfo.serialNumber") or ""
+            num_pkgs      = pd.get("summary.hardware.numCpuPkgs")
+            nic_count     = pd.get("summary.hardware.numNics")
+            cores_per_socket = (num_cores // num_pkgs) if num_cores and num_pkgs else None
+
+            # BIOS version + date
+            bios_ver      = pd.get("hardware.biosInfo.biosVersion") or ""
+            bios_date_raw = pd.get("hardware.biosInfo.releaseDate")
+            if bios_ver and bios_date_raw:
+                try:
+                    bios_version = f"{bios_ver} ({bios_date_raw.strftime('%Y-%m-%d')})"
+                except Exception:
+                    bios_version = bios_ver
+            else:
+                bios_version = bios_ver or ""
+
+            # Total accessible storage in TB
+            ds_bytes = host_storage_bytes.get(moid, 0)
+            storage_tb = round(ds_bytes / (1024 ** 4), 1) if ds_bytes else None
+
             hosts.append({
                 "moid": moid,
                 "name": pd.get("name", moid),
@@ -450,6 +508,18 @@ def _list_hosts_sync() -> list[dict]:
                 "power_state": str(pd.get("summary.runtime.powerState", "unknown")),
                 "cpu_usage_pct": round(cpu_use_mhz / total_mhz * 100, 1) if total_mhz else None,
                 "mem_usage_pct": round(mem_use_mb / mem_total_mb * 100, 1) if mem_total_mb else None,
+                "management_ip": primary_ip,
+                "all_ips": all_ips,
+                "os_version": os_version,
+                "vendor": vendor,
+                "model": model,
+                "cpu_model": cpu_model,
+                "serial_number": serial_number,
+                "cpu_packages": num_pkgs,
+                "cores_per_socket": cores_per_socket,
+                "nic_count": nic_count,
+                "bios_version": bios_version,
+                "storage_tb": storage_tb,
             })
         return hosts
     finally:
@@ -550,3 +620,102 @@ async def list_cluster_storage() -> dict[str, dict]:
     except Exception:
         log.exception("vCenter list_cluster_storage failed")
         return {}
+
+
+def _list_datastores_sync() -> list[dict]:
+    """Enumerate all datastores: name, type, capacity/free/used%, accessible, cluster."""
+    si = _connect()
+    if si is None:
+        return []
+    try:
+        content = si.RetrieveContent()
+        pc = content.propertyCollector
+
+        # Build cluster → datastore moid mapping
+        traversal = [
+            vim.TraversalSpec(
+                name="visitFolders", type=vim.Folder, path="childEntity", skip=False,
+                selectSet=[
+                    vim.SelectionSpec(name="visitFolders"),
+                    vim.SelectionSpec(name="visitDC"),
+                    vim.SelectionSpec(name="visitCCR"),
+                ],
+            ),
+            vim.TraversalSpec(
+                name="visitDC", type=vim.Datacenter, path="datastoreFolder", skip=False,
+                selectSet=[vim.SelectionSpec(name="visitFolders")],
+            ),
+            vim.TraversalSpec(
+                name="visitCCR", type=vim.ClusterComputeResource, path="datastore", skip=False,
+            ),
+        ]
+
+        # First get cluster→datastore associations
+        cl_traversal = [
+            vim.TraversalSpec(
+                name="vF", type=vim.Folder, path="childEntity", skip=False,
+                selectSet=[vim.SelectionSpec(name="vF"), vim.SelectionSpec(name="vDC"), vim.SelectionSpec(name="vCCR")],
+            ),
+            vim.TraversalSpec(name="vDC", type=vim.Datacenter, path="hostFolder", skip=False,
+                selectSet=[vim.SelectionSpec(name="vF")]),
+            vim.TraversalSpec(name="vCCR", type=vim.ClusterComputeResource, path="host", skip=False),
+        ]
+        cl_spec = vim.PropertyFilterSpec(
+            objectSet=[vim.ObjectSpec(obj=content.rootFolder, skip=True, selectSet=cl_traversal)],
+            propSet=[vim.PropertySpec(type=vim.ClusterComputeResource, all=False, pathSet=["name", "datastore"])],
+        )
+        ds_to_cluster: dict[str, str] = {}
+        for obj in pc.RetrieveContents([cl_spec]):
+            pd = {p.name: p.val for p in obj.propSet}
+            cl_name = pd.get("name", "")
+            for ds_ref in (pd.get("datastore") or []):
+                ds_to_cluster[ds_ref._moId] = cl_name
+
+        # Then enumerate all datastores
+        view = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datastore], True)
+        ds_list = list(view.view)
+        view.Destroy()
+
+        obj_specs = [vim.ObjectSpec(obj=ds) for ds in ds_list]
+        ds_filter = vim.PropertyFilterSpec(
+            objectSet=obj_specs,
+            propSet=[vim.PropertySpec(
+                type=vim.Datastore, all=False,
+                pathSet=[
+                    "summary.name", "summary.type",
+                    "summary.capacity", "summary.freeSpace",
+                    "summary.accessible",
+                ],
+            )],
+        )
+
+        out = []
+        for obj in pc.RetrieveContents([ds_filter]):
+            pd = {p.name: p.val for p in obj.propSet}
+            cap = pd.get("summary.capacity") or 0
+            free = pd.get("summary.freeSpace") or 0
+            accessible = pd.get("summary.accessible", True)
+            cap_gb = round(cap / (1024 ** 3), 1) if cap else None
+            free_gb = round(free / (1024 ** 3), 1) if free else None
+            used_pct = round((cap - free) / cap * 100, 1) if cap else None
+            out.append({
+                "name": pd.get("summary.name", ""),
+                "datastore_type": pd.get("summary.type"),
+                "capacity_gb": cap_gb,
+                "free_gb": free_gb,
+                "used_pct": used_pct,
+                "accessible": bool(accessible),
+                "cluster": ds_to_cluster.get(obj.obj._moId),
+            })
+        out.sort(key=lambda d: (d["cluster"] or "", d["name"]))
+        return out
+    finally:
+        Disconnect(si)
+
+
+async def list_datastores() -> list[dict]:
+    try:
+        return await asyncio.to_thread(_list_datastores_sync)
+    except Exception:
+        log.exception("vCenter list_datastores failed")
+        return []

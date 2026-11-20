@@ -414,6 +414,21 @@ function ClusterRow({ item, period }: { item: CapacityClusterItem; period: numbe
                     <p className="text-gray-600">CPU VM сер. <strong>{item.avg_cpu_pct}%</strong> · пік {item.peak_cpu_pct ?? "?"}%</p>
                     <p className="text-gray-600">RAM VM сер. <strong>{item.avg_ram_pct}%</strong> · пік {item.peak_ram_pct ?? "?"}%</p>
                     <p className="text-xs text-gray-400 mt-1">% відносно vCPU кожної ВМ (тренд)</p>
+                    {(item.cpu_days_to_80 != null || item.ram_days_to_80 != null) && (
+                      <div className="mt-2 pt-2 border-t border-blue-100 space-y-0.5">
+                        <p className="text-xs text-gray-500 mb-1">Лінійна регресія 90д → 80% поріг</p>
+                        {item.cpu_days_to_80 != null && (
+                          <p className={`text-xs font-medium ${item.cpu_days_to_80 <= 30 ? "text-red-600" : item.cpu_days_to_80 <= 90 ? "text-amber-600" : "text-blue-600"}`}>
+                            CPU → 80%: ~{item.cpu_days_to_80 === 0 ? "вже досягнуто" : `${item.cpu_days_to_80} днів`}
+                          </p>
+                        )}
+                        {item.ram_days_to_80 != null && (
+                          <p className={`text-xs font-medium ${item.ram_days_to_80 <= 30 ? "text-red-600" : item.ram_days_to_80 <= 90 ? "text-amber-600" : "text-purple-600"}`}>
+                            RAM → 80%: ~{item.ram_days_to_80 === 0 ? "вже досягнуто" : `${item.ram_days_to_80} днів`}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <p className="text-gray-400 text-xs">Немає даних vCenter (обмежений доступ)</p>

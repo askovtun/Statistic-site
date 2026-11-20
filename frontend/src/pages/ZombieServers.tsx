@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type ZombieServerItem, type ZombieSignal } from "../api/client";
 import { exportToXlsx } from "../utils/exportXlsx";
@@ -271,6 +272,7 @@ export default function ZombieServers() {
       "RAM avg %":           i.avg_ram_pct ?? "",
       "RAM пік %":           i.max_ram_pct ?? "",
       "Покриття даних %":    i.data_coverage_pct ?? "",
+      "CPU idle стабільно %": i.consistency_pct ?? "",
       "В Zabbix":            i.in_zabbix ? "Так" : "Ні",
       "В vCenter":           i.in_vcenter ? "Так" : "Ні",
       "Стан живлення":       i.power_state,
@@ -494,7 +496,13 @@ export default function ZombieServers() {
 
                     {/* Name */}
                     <td className="px-3 py-2.5 max-w-[200px]">
-                      <p className="font-semibold text-slate-800 dark:text-slate-100 truncate">{item.name}</p>
+                      <Link
+                        to={`/resources?search=${encodeURIComponent(item.name)}&vm=${encodeURIComponent(item.name)}&days=${days}`}
+                        className="font-semibold text-blue-700 dark:text-blue-400 hover:underline truncate block"
+                        title="Відкрити графік ресурсів"
+                      >
+                        {item.name}
+                      </Link>
                       {item.fqdn && item.fqdn !== item.name && (
                         <p className="text-slate-400 dark:text-slate-500 truncate text-[10px] mt-0.5">{item.fqdn}</p>
                       )}
@@ -530,6 +538,14 @@ export default function ZombieServers() {
                     {/* CPU */}
                     <td className="px-3 py-2.5">
                       <PctBar avg={item.avg_cpu_pct} max={item.max_cpu_pct} danger={3} />
+                      {item.consistency_pct != null && (
+                        <span
+                          title={`${item.consistency_pct}% днів із середнім CPU < 3% — стабільно idle`}
+                          className="text-[9px] mt-0.5 block tabular-nums text-red-600 dark:text-red-400 font-medium leading-none"
+                        >
+                          {item.consistency_pct}% днів idle
+                        </span>
+                      )}
                     </td>
 
                     {/* RAM */}

@@ -138,7 +138,19 @@ export default function Resources() {
   const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(
     () => new Set(VISIBLE_COLUMNS.map((c) => c.key as ColKey))
   );
-  const [selectedVm, setSelectedVm] = useState<string | null>(null);
+  const [selectedVm, setSelectedVm] = useState<string | null>(
+    () => searchParams.get("vm") ?? null
+  );
+
+  // When modal closes — remove ?vm= from URL without navigation
+  function closeHistoryModal() {
+    setSelectedVm(null);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("vm");
+      return next;
+    }, { replace: true });
+  }
 
   const showCol = (key: ColKey) => visibleCols.has(key);
 
@@ -719,7 +731,7 @@ export default function Resources() {
       )}
 
       {selectedVm && (
-        <ResourceHistoryModal name={selectedVm} onClose={() => setSelectedVm(null)} />
+        <ResourceHistoryModal name={selectedVm} onClose={closeHistoryModal} />
       )}
     </div>
   );

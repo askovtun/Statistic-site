@@ -236,6 +236,9 @@ class CapacityClusterItem(BaseModel):
     free_storage_gb: int | None = None
     storage_used_pct: float | None = None
     status: str = "unknown"
+    # Linear regression forecast from 90-day vCenter trend
+    cpu_days_to_80: int | None = None
+    ram_days_to_80: int | None = None
 
 
 class CapacityResponse(BaseModel):
@@ -544,7 +547,9 @@ class CmdbVcenterDiffItem(BaseModel):
     primary_ip: str | None = None
     in_vcenter: bool = True
     # CMDB values
-    cmdb_vcpu: int | None = None
+    cmdb_vcpu: int | None = None       # for physical: cpu_count * cpu_cores (total)
+    cmdb_cpu_count: int | None = None  # physical only: number of sockets
+    cmdb_cpu_cores: int | None = None  # physical only: cores per socket
     cmdb_vram_gb: int | None = None
     cmdb_cluster: str | None = None
     cmdb_status: str | None = None
@@ -555,10 +560,14 @@ class CmdbVcenterDiffItem(BaseModel):
     vc_cluster: str | None = None
     vc_power_state: str | None = None
     vc_os: str | None = None
+    vc_ip: str | None = None
+    vc_hostname: str | None = None
     # Diff flags
     vcpu_diff: bool = False
     vram_diff: bool = False
     cluster_diff: bool = False
+    ip_diff: bool = False
+    fqdn_diff: bool = False
     diff_count: int = 0
 
 
@@ -570,6 +579,8 @@ class CmdbVcenterDiffResponse(BaseModel):
     vcpu_diff_count: int = 0
     vram_diff_count: int = 0
     cluster_diff_count: int = 0
+    ip_diff_count: int = 0
+    fqdn_diff_count: int = 0
     items: list[CmdbVcenterDiffItem]
     synced_at: str | None = None
 
@@ -770,6 +781,7 @@ class ZombieServerItem(BaseModel):
     avg_ram_pct: float | None = None
     max_ram_pct: float | None = None   # peak RAM over the period
     data_coverage_pct: float | None = None  # % of expected hourly buckets with data
+    consistency_pct: float | None = None    # % of days with CPU below 3% threshold
     in_zabbix: bool = False
     in_vcenter: bool = False
     zombie_score: int = 0
@@ -786,3 +798,278 @@ class ZombieServerResponse(BaseModel):
     items: list[ZombieServerItem]
     synced_at: str | None = None
     period_days: int = 90
+
+
+# ── Fleet Trends ───────────────────────────────────────────────────────────────
+
+class FleetDailyPerfPoint(BaseModel):
+    timestamp: int
+    cpu_avg: float | None = None
+    ram_avg: float | None = None
+
+
+class WeeklyFleetChange(BaseModel):
+    week: str
+    week_start: int
+    added: int = 0
+    removed: int = 0
+    cluster_changes: int = 0
+
+
+class FleetTrendsResponse(BaseModel):
+    daily_perf: list[FleetDailyPerfPoint] = []
+    weekly_changes: list[WeeklyFleetChange] = []
+    total_migrations_90d: int = 0
+    synced_at: str | None = None
+
+
+# ── VM Migrations (DRS) ────────────────────────────────────────────────────────
+
+class VmMigrationItem(BaseModel):
+    id: int
+    vm_name: str
+    from_cluster: str | None = None
+    to_cluster: str | None = None
+    detected_at: str
+
+
+class ClusterFlowItem(BaseModel):
+    from_cluster: str
+    to_cluster: str
+    count: int
+
+
+class WeeklyMigrationCount(BaseModel):
+    week: str
+    week_start: int
+    count: int
+
+
+class TopMigratedVm(BaseModel):
+    name: str
+    migration_count: int
+    clusters: list[str] = []
+
+
+class VmMigrationsResponse(BaseModel):
+    total: int
+    period_days: int
+    top_migrated_vms: list[TopMigratedVm] = []
+    cluster_flow: list[ClusterFlowItem] = []
+    weekly_counts: list[WeeklyMigrationCount] = []
+    items: list[VmMigrationItem] = []
+
+
+# ── Zabbix Incident Trends ─────────────────────────────────────────────────────
+
+class ZabbixTrendWeek(BaseModel):
+    week_key: str
+    week_start: int
+    disaster: int = 0
+    high: int = 0
+    average: int = 0
+    warning: int = 0
+    information: int = 0
+    not_classified: int = 0
+    total: int = 0
+
+
+class ZabbixTrendsResponse(BaseModel):
+    weeks: list[ZabbixTrendWeek]
+    weeks_requested: int
+    total_problems: int
+    disaster: int = 0
+    high: int = 0
+    average: int = 0
+    warning: int = 0
+    information: int = 0
+    generated_at: str
+
+
+# ── CMDB Data Completeness ─────────────────────────────────────────────────────
+
+class CmdbCompletenessField(BaseModel):
+    key: str
+    label: str
+    filled: int
+    total: int
+    pct: float
+
+
+class CmdbCompletenessType(BaseModel):
+    ci_type: str
+    label: str
+    total: int
+    fields: list[CmdbCompletenessField]
+    overall_pct: float = 0.0
+
+
+class CmdbCompletenessResponse(BaseModel):
+    types: list[CmdbCompletenessType]
+    synced_at: str | None = None
+
+
+# ── Power State Report ─────────────────────────────────────────────────────────
+
+class PowerStateVm(BaseModel):
+    name: str
+    cmdb_status: str | None = None
+    cluster: str | None = None
+    vcpu: int | None = None
+    vram_gb: int | None = None
+    power_state: str
+    boot_time: str | None = None
+
+
+class PowerStateResponse(BaseModel):
+    total_off: int
+    not_decommissioned: int
+    by_cluster: dict[str, int] = {}
+    vms: list[PowerStateVm]
+    synced_at: str | None = None
+
+
+# ── Infrastructure Growth Trend ────────────────────────────────────────────────
+
+class InfraGrowthPoint(BaseModel):
+    date: str
+    vm_total: int = 0
+    physical_total: int = 0
+
+
+class InfraGrowthResponse(BaseModel):
+    points: list[InfraGrowthPoint]
+    current_vms: int = 0
+    current_physical: int = 0
+    days: int = 90
+
+
+# ── VM Age ─────────────────────────────────────────────────────────────────────
+
+class VmAgeItem(BaseModel):
+    name: str
+    cluster: str | None = None
+    cmdb_status: str | None = None
+    power_state: str | None = None
+    created_at: str | None = None
+    age_days: int | None = None
+    vcpu: int | None = None
+    vram_gb: int | None = None
+
+
+class VmAgeResponse(BaseModel):
+    vms: list[VmAgeItem]
+    total: int
+    with_create_date: int
+    oldest_days: int | None = None
+    synced_at: str | None = None
+
+
+# ── Host Distribution ──────────────────────────────────────────────────────────
+
+class HostDistItem(BaseModel):
+    host_name: str
+    cluster: str | None = None
+    vm_count: int = 0
+    cpu_usage_pct: float | None = None
+    mem_usage_pct: float | None = None
+    num_cpu_cores: int | None = None
+    memory_gb: int | None = None
+
+
+class HostDistResponse(BaseModel):
+    hosts: list[HostDistItem]
+    total_vms_mapped: int
+    synced_at: str | None = None
+
+
+# ── Applications & IT Services ─────────────────────────────────────────────────
+
+class AppItem(BaseModel):
+    jira_id: str
+    name: str
+    status: str | None = None
+    ci_type: str = "application"
+
+
+class ApplicationsResponse(BaseModel):
+    applications: list[AppItem]
+    it_services: list[AppItem]
+    total_apps: int
+    total_services: int
+    fetched_at: str
+
+
+# ── Network Inventory ──────────────────────────────────────────────────────────
+
+class NetworkDeviceItem(BaseModel):
+    jira_id: str
+    name: str
+    device_type: str
+    location: str | None = None
+    status: str | None = None
+
+
+class NetworkInventoryResponse(BaseModel):
+    devices: list[NetworkDeviceItem]
+    by_type: dict[str, int] = {}
+    by_location: dict[str, int] = {}
+    total: int
+    fetched_at: str
+
+
+# ── Server Rooms ───────────────────────────────────────────────────────────────
+
+class ServerRoomItem(BaseModel):
+    jira_id: str
+    name: str
+    status: str | None = None
+    site: str | None = None
+
+
+class ServerRoomsResponse(BaseModel):
+    server_rooms: list[ServerRoomItem]
+    total: int
+    fetched_at: str
+
+
+# ── Backup Coverage ────────────────────────────────────────────────────────────
+
+class BackupCoverageItem(BaseModel):
+    name: str
+    ci_type: str = "vm"
+    has_backup: bool = False
+    backup_group: str | None = None
+    fqdn: str | None = None
+    cluster: str | None = None
+    cmdb_status: str | None = None
+
+
+class BackupCoverageResponse(BaseModel):
+    total: int
+    covered: int
+    not_covered: int
+    coverage_pct: float
+    items: list[BackupCoverageItem]
+    fetched_at: str
+
+
+# ── Datastores ─────────────────────────────────────────────────────────────────
+
+class DatastoreItem(BaseModel):
+    name: str
+    datastore_type: str | None = None
+    capacity_gb: float | None = None
+    free_gb: float | None = None
+    used_pct: float | None = None
+    accessible: bool = True
+    cluster: str | None = None
+
+
+class DatastoresResponse(BaseModel):
+    datastores: list[DatastoreItem]
+    total: int
+    total_capacity_gb: float = 0
+    total_free_gb: float = 0
+    overall_used_pct: float | None = None
+    fetched_at: str | None = None

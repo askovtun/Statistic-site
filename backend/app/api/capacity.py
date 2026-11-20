@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time as _time
 from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,6 +11,29 @@ from app.models.schemas import CapacityClusterItem, CapacityResponse
 from app.services import db, metrics_store, response_cache
 
 _WITNESS_RE = re.compile(r"witness", re.IGNORECASE)
+
+
+def _days_to_threshold(points: list[dict], key: str, threshold: float = 80.0) -> int | None:
+    valid = [(float(p["timestamp"]), p[key]) for p in points if p.get(key) is not None]
+    if len(valid) < 5:
+        return None
+    xs = [p[0] for p in valid]
+    ys = [p[1] for p in valid]
+    n = len(valid)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    ss_xy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    ss_xx = sum((x - mean_x) ** 2 for x in xs)
+    if ss_xx == 0 or ss_xy / ss_xx <= 0:
+        return None
+    slope = ss_xy / ss_xx
+    intercept = mean_y - slope * mean_x
+    now = float(int(_time.time()))
+    current_y = slope * now + intercept
+    if current_y >= threshold:
+        return 0
+    days = int((threshold - current_y) / slope / 86400)
+    return days if 0 < days <= 3650 else None
 
 
 def _standalone_group(hostname: str) -> str | None:
@@ -129,13 +153,18 @@ async def get_capacity(
             else None
         )
 
-        # Historical metrics (30d avg/peak from vCenter perf data)
+        # Historical metrics (period avg/peak from vCenter perf data)
         cl_moids = [vm_moid_map[v["name"]] for v in cl_vms if v.get("name") in vm_moid_map]
         hist = metrics_store.get_cluster_capacity_metrics(cl_moids, period_days) if cl_moids else {}
         avg_cpu_pct = hist.get("avg_cpu_pct")
         avg_ram_pct = hist.get("avg_ram_pct")
         peak_cpu_pct = hist.get("peak_cpu_pct")
         peak_ram_pct = hist.get("peak_ram_pct")
+
+        # Linear regression over 90-day daily trend for capacity forecast
+        daily_trend = metrics_store.get_cluster_daily_trend(cl_moids, 90) if cl_moids else []
+        cpu_days_to_80 = _days_to_threshold(daily_trend, "avg_cpu_pct")
+        ram_days_to_80 = _days_to_threshold(daily_trend, "avg_ram_pct")
 
         # Free capacity uses host-level quickStats (host_cpu_pct / host_ram_pct).
         # "free" = literally free (total − used), matching vCenter "Capacity and Usage".
@@ -198,6 +227,8 @@ async def get_capacity(
             free_storage_gb=free_storage_gb,
             storage_used_pct=storage_used_pct,
             status=status,
+            cpu_days_to_80=cpu_days_to_80,
+            ram_days_to_80=ram_days_to_80,
         ))
 
     items.sort(key=lambda x: (_STATUS_ORDER.get(x.status, 3), -(x.physical_ram_gb or 0)))

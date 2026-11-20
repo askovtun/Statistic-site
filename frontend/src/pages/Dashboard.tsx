@@ -26,8 +26,8 @@ function Sparkline({ data, color = "#3b82f6", height = 24, width = 72 }: {
   );
 }
 import {
-  ComposedChart, Line, CartesianGrid, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine,
+  ComposedChart, Line, Bar, CartesianGrid, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, ReferenceLine, BarChart, Legend,
 } from "recharts";
 
 function StatCard({
@@ -195,6 +195,13 @@ export default function Dashboard() {
     queryFn: () => api.zombieServers(90, 3),
     retry: false,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const fleetQ = useQuery({
+    queryKey: ["fleet-trends"],
+    queryFn: api.fleetTrends,
+    retry: false,
+    staleTime: 10 * 60 * 1000,
   });
 
   const vcHealth = useQuery({
@@ -758,6 +765,72 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
+          </div>
+        </section>
+      )}
+
+      {/* ── Тренди флоту ВМ ─────────────────────────────────────────────────── */}
+      {!fleetQ.isError && fleetQ.data && (
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className={sectionHead}>Тренди флоту ВМ (90 днів)</h2>
+            <button onClick={() => navigate("/vm-migrations")} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+              Міграції VM →
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+            {/* Weekly fleet changes bar chart */}
+            {fleetQ.data.weekly_changes.length > 0 && (
+              <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm p-4">
+                <p className="text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide mb-1">
+                  Тижневі зміни флоту ВМ
+                </p>
+                <p className="text-xs text-gray-400 dark:text-slate-500 mb-2">
+                  +{fleetQ.data.weekly_changes.reduce((s, w) => s + w.added, 0)} додано,&nbsp;
+                  -{fleetQ.data.weekly_changes.reduce((s, w) => s + w.removed, 0)} видалено,&nbsp;
+                  {fleetQ.data.total_migrations_90d} міграцій
+                </p>
+                <ResponsiveContainer width="100%" height={160}>
+                  <BarChart data={fleetQ.data.weekly_changes.slice(-13)}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="week" tick={{ fontSize: 9, fill: "#9ca3af" }} />
+                    <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} width={28} />
+                    <Tooltip
+                      contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0", fontSize: 12 }}
+                      formatter={(v: unknown, name?: unknown) => [v as string, (name === "added" ? "Додано" : name === "removed" ? "Видалено" : "Міграції")] as [string, string]}
+                    />
+                    <Legend formatter={(v) => v === "added" ? "Додано" : v === "removed" ? "Видалено" : "Міграції"} wrapperStyle={{ fontSize: 11 }} />
+                    <Bar dataKey="added" fill="#22c55e" stackId="a" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="removed" fill="#ef4444" stackId="b" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="cluster_changes" fill="#3b82f6" stackId="c" radius={[2, 2, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {/* Daily fleet CPU/RAM line chart */}
+            {fleetQ.data.daily_perf.some(p => p.cpu_avg != null) && (
+              <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm p-4">
+                <p className="text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide mb-2">
+                  Середнє завантаження флоту CPU/RAM (Zabbix)
+                </p>
+                <ResponsiveContainer width="100%" height={160}>
+                  <ComposedChart data={fleetQ.data.daily_perf}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="timestamp" tickFormatter={formatTick} tick={{ fontSize: 9, fill: "#9ca3af" }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: "#9ca3af" }} unit="%" width={35} />
+                    <Tooltip
+                      labelFormatter={formatTooltipLabel}
+                      formatter={(v: unknown, name?: unknown) => [`${Number(v).toFixed(1)}%`, name === "cpu_avg" ? "CPU" : "RAM"] as [string, string]}
+                      contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, color: "#e2e8f0" }}
+                    />
+                    <Line type="monotone" dataKey="cpu_avg" stroke="#3b82f6" dot={false} strokeWidth={2} connectNulls={false} name="cpu_avg" />
+                    <Line type="monotone" dataKey="ram_avg" stroke="#a855f7" dot={false} strokeWidth={2} connectNulls={false} name="ram_avg" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         </section>
       )}

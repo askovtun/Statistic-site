@@ -6,10 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
-    capacity, clusters, cmdb_stats, cmdb_vcenter, comparison, decommission, decommissioned,
-    disk_analytics, disk_forecast, license_report, monitoring_coverage, network_channels,
-    os_report, physical_servers, resources, security, sync, topology, uptime, vcenter,
-    vcenter_new_vms, vm_changes, zabbix_problems, zombie_servers,
+    applications, backup_coverage, capacity, clusters, cmdb_completeness, cmdb_stats,
+    cmdb_vcenter, comparison, datastores, decommission, decommissioned, disk_analytics,
+    disk_forecast, fleet_trends, host_distribution, infra_growth, jira_ci_links,
+    license_report, monitoring_coverage, network_channels, network_inventory, os_report,
+    physical_servers, power_state, resources, security, server_rooms, sync, topology,
+    uptime, vcenter, vcenter_new_vms, vm_age, vm_changes, vm_migrations, vuln_scan,
+    zabbix_problems, zabbix_trends, zombie_servers,
 )
 from app.config import settings
 from app.services import sync_service
@@ -74,6 +77,21 @@ app.include_router(disk_analytics.router, prefix="/api")
 app.include_router(network_channels.router, prefix="/api")
 app.include_router(vcenter_new_vms.router, prefix="/api")
 app.include_router(license_report.router, prefix="/api")
+app.include_router(fleet_trends.router, prefix="/api")
+app.include_router(vm_migrations.router, prefix="/api")
+app.include_router(vuln_scan.router, prefix="/api")
+app.include_router(zabbix_trends.router, prefix="/api")
+app.include_router(cmdb_completeness.router, prefix="/api")
+app.include_router(power_state.router, prefix="/api")
+app.include_router(infra_growth.router, prefix="/api")
+app.include_router(vm_age.router, prefix="/api")
+app.include_router(host_distribution.router, prefix="/api")
+app.include_router(applications.router, prefix="/api")
+app.include_router(network_inventory.router, prefix="/api")
+app.include_router(server_rooms.router, prefix="/api")
+app.include_router(backup_coverage.router, prefix="/api")
+app.include_router(datastores.router, prefix="/api")
+app.include_router(jira_ci_links.router, prefix="/api")
 
 
 @app.get("/api/health", tags=["health"])

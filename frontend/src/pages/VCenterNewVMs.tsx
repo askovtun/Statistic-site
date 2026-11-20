@@ -14,7 +14,24 @@ function PowerBadge({ state }: { state: string | null }) {
   return <span className="text-xs text-gray-400">{state ?? "—"}</span>;
 }
 
+function KindBadge({ kind }: { kind: "vm" | "hypervisor" }) {
+  if (kind === "hypervisor")
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded
+                       bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+        ⬡ Гіпервізор
+      </span>
+    );
+  return (
+    <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded
+                     bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+      ▣ ВМ
+    </span>
+  );
+}
+
 type ImportStatus = { type: "idle" } | { type: "loading" } | { type: "done"; result: ImportResult } | { type: "error"; msg: string };
+type KindFilter = "all" | "vm" | "hypervisor";
 
 export default function VCenterNewVMs() {
   const queryClient = useQueryClient();
@@ -25,6 +42,7 @@ export default function VCenterNewVMs() {
 
   const [search, setSearch]         = useState("");
   const [onlyActive, setOnlyActive] = useState(false);
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [selected, setSelected]     = useState<Set<string>>(new Set());
   const [page, setPage]             = useState(1);
   const [importStatus, setImportStatus] = useState<ImportStatus>({ type: "idle" });
@@ -33,6 +51,7 @@ export default function VCenterNewVMs() {
 
   const filtered = useMemo(() => {
     return items.filter((vm) => {
+      if (kindFilter !== "all" && vm.kind !== kindFilter) return false;
       if (onlyActive && vm.power_state !== "poweredOn") return false;
       if (search) {
         const q = search.toLowerCase();
@@ -46,13 +65,13 @@ export default function VCenterNewVMs() {
       }
       return true;
     });
-  }, [items, search, onlyActive]);
+  }, [items, search, onlyActive, kindFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageItems  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  const allOnPage    = pageItems.every((vm) => selected.has(vm.moid));
-  const someOnPage   = pageItems.some((vm) => selected.has(vm.moid));
+  const allOnPage  = pageItems.every((vm) => selected.has(vm.moid));
+  const someOnPage = pageItems.some((vm) => selected.has(vm.moid));
 
   function toggleAll() {
     if (allOnPage) {
@@ -109,34 +128,42 @@ export default function VCenterNewVMs() {
     </div>
   );
 
-  const totalVcenter = data?.total_vcenter ?? 0;
-  const notInCmdb   = data?.not_in_cmdb   ?? 0;
-  const inCmdb      = totalVcenter - notInCmdb;
-  const poweredOn   = items.filter((vm) => vm.power_state === "poweredOn").length;
+  const totalVcenter    = data?.total_vcenter    ?? 0;
+  const totalHosts      = data?.total_hosts      ?? 0;
+  const notInCmdb       = data?.not_in_cmdb      ?? 0;
+  const newHypervisors  = data?.new_hypervisors  ?? 0;
+  const inCmdb          = totalVcenter - notInCmdb;
+  const poweredOn       = items.filter((vm) => vm.power_state === "poweredOn" && vm.kind === "vm").length;
+  const totalNew        = notInCmdb + newHypervisors;
+
+  const selectedVms = [...selected].filter(moid => items.find(i => i.moid === moid)?.kind === "vm");
+  const selectedHyp = [...selected].filter(moid => items.find(i => i.moid === moid)?.kind === "hypervisor");
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
       {/* Header */}
       <h1 className="text-2xl font-bold text-gray-800 dark:text-slate-100 mb-1">
-        Нові ВМ з vCenter
+        Нові ВМ та гіпервізори з vCenter
       </h1>
       <p className="text-sm text-gray-500 dark:text-slate-400 mb-6">
-        Віртуальні машини, які існують у vCenter але відсутні в CMDB (створені більше 1 тижня тому). Можна імпортувати їх автоматично.
+        Об'єкти, які існують у vCenter але відсутні в CMDB. ВМ показуються якщо старші 1 тижня, гіпервізори — відразу.
       </p>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Всього у vCenter" value={totalVcenter} color="blue" />
-        <StatCard label="Є в CMDB"         value={inCmdb}       color="green" />
-        <StatCard label="Відсутні в CMDB"  value={notInCmdb}    color="red"   />
-        <StatCard label="Увімкнені (нові)" value={poweredOn}    color="amber" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        <StatCard label="ВМ у vCenter"          value={totalVcenter}   color="blue"   />
+        <StatCard label="Гіпервізорів"           value={totalHosts}     color="indigo" />
+        <StatCard label="ВМ є в CMDB"            value={inCmdb}         color="green"  />
+        <StatCard label="Нові ВМ"                value={notInCmdb}      color="red"    />
+        <StatCard label="Нові гіпервізори"       value={newHypervisors} color="purple" />
+        <StatCard label="Нові ВМ (увімкнені)"   value={poweredOn}      color="amber"  />
       </div>
 
       {/* Import result banner */}
       {importStatus.type === "done" && (
         <div className="mb-4 p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-sm">
           <p className="font-medium text-green-700 dark:text-green-400">
-            ✓ Імпорт завершено: додано {importStatus.result.imported},
+            ✓ Імпорт завершено: додано {importStatus.result.imported} об'єктів,
             пропущено {importStatus.result.skipped}
             {importStatus.result.errors.length > 0 && `, помилок ${importStatus.result.errors.length}`}
           </p>
@@ -161,10 +188,10 @@ export default function VCenterNewVMs() {
         </div>
       )}
 
-      {notInCmdb === 0 ? (
+      {totalNew === 0 ? (
         <div className="text-center py-16 text-gray-400 dark:text-slate-500">
           <p className="text-4xl mb-3">✓</p>
-          <p className="text-lg font-medium">Всі ВМ з vCenter вже є в CMDB</p>
+          <p className="text-lg font-medium">Всі ВМ та гіпервізори з vCenter вже є в CMDB</p>
         </div>
       ) : (
         <>
@@ -179,6 +206,25 @@ export default function VCenterNewVMs() {
                          bg-white dark:bg-slate-800 text-gray-800 dark:text-slate-200
                          placeholder-gray-400 dark:placeholder-slate-500 w-72"
             />
+
+            {/* Kind filter tabs */}
+            <div className="flex rounded-lg border border-gray-200 dark:border-slate-700 overflow-hidden text-xs">
+              {(["all", "vm", "hypervisor"] as KindFilter[]).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => { setKindFilter(k); setPage(1); clearSelection(); }}
+                  className={
+                    "px-3 py-1.5 transition " +
+                    (kindFilter === k
+                      ? "bg-blue-600 text-white"
+                      : "bg-white dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-700")
+                  }
+                >
+                  {k === "all" ? "Всі" : k === "vm" ? "ВМ" : "Гіпервізори"}
+                </button>
+              ))}
+            </div>
+
             <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
@@ -192,7 +238,11 @@ export default function VCenterNewVMs() {
             <div className="flex-1" />
 
             <span className="text-xs text-gray-500 dark:text-slate-400">
-              Вибрано: {selected.size} / {filtered.length}
+              Вибрано: {selected.size}
+              {selectedVms.length > 0 && ` (ВМ: ${selectedVms.length}`}
+              {selectedHyp.length > 0 && `${selectedVms.length > 0 ? ", " : " ("}гіпервіз.: ${selectedHyp.length}`}
+              {(selectedVms.length > 0 || selectedHyp.length > 0) && ")"}
+              {" / "}{filtered.length}
             </span>
             <button
               onClick={selectAllFiltered}
@@ -234,14 +284,16 @@ export default function VCenterNewVMs() {
                       className="rounded"
                     />
                   </th>
+                  <th className="px-3 py-2 text-left">Тип</th>
                   <th className="px-3 py-2 text-left">Назва у vCenter</th>
                   <th className="px-3 py-2 text-left">Ім'я в CMDB</th>
                   <th className="px-3 py-2 text-left">Кластер</th>
-                  <th className="px-3 py-2 text-right">vCPU</th>
-                  <th className="px-3 py-2 text-right">vRAM ГБ</th>
+                  <th className="px-3 py-2 text-right">CPU</th>
+                  <th className="px-3 py-2 text-right">RAM ГБ</th>
+                  <th className="px-3 py-2 text-right">Диск ТБ</th>
                   <th className="px-3 py-2 text-left">Стан</th>
                   <th className="px-3 py-2 text-left">Hostname</th>
-                  <th className="px-3 py-2 text-left">IP</th>
+                  <th className="px-3 py-2 text-left">IP адреси</th>
                   <th className="px-3 py-2 text-left">OS</th>
                   <th className="px-3 py-2 text-left">Дата створення</th>
                 </tr>
@@ -296,16 +348,18 @@ export default function VCenterNewVMs() {
 function StatCard({
   label, value, color,
 }: {
-  label: string; value: number; color: "blue" | "green" | "red" | "amber";
+  label: string; value: number; color: "blue" | "green" | "red" | "amber" | "purple" | "indigo";
 }) {
-  const palette = {
-    blue:  "bg-blue-50  dark:bg-blue-900/20  border-blue-200  dark:border-blue-800  text-blue-700  dark:text-blue-400",
-    green: "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-700 dark:text-green-400",
-    red:   "bg-red-50   dark:bg-red-900/20   border-red-200   dark:border-red-800   text-red-700   dark:text-red-400",
-    amber: "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400",
-  }[color];
+  const palette: Record<string, string> = {
+    blue:   "bg-blue-50   dark:bg-blue-900/20   border-blue-200   dark:border-blue-800   text-blue-700   dark:text-blue-400",
+    green:  "bg-green-50  dark:bg-green-900/20  border-green-200  dark:border-green-800  text-green-700  dark:text-green-400",
+    red:    "bg-red-50    dark:bg-red-900/20    border-red-200    dark:border-red-800    text-red-700    dark:text-red-400",
+    amber:  "bg-amber-50  dark:bg-amber-900/20  border-amber-200  dark:border-amber-800  text-amber-700  dark:text-amber-400",
+    purple: "bg-purple-50 dark:bg-purple-900/20 border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-400",
+    indigo: "bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-400",
+  };
   return (
-    <div className={`rounded-xl border p-4 ${palette}`}>
+    <div className={`rounded-xl border p-4 ${palette[color]}`}>
       <p className="text-2xl font-bold font-mono tabular-nums">{value}</p>
       <p className="text-xs mt-0.5 opacity-75">{label}</p>
     </div>
@@ -317,18 +371,25 @@ function VmRow({
 }: {
   vm: VCenterNewVM; checked: boolean; onToggle: () => void;
 }) {
+  const isHypervisor = vm.kind === "hypervisor";
   return (
     <tr
       onClick={onToggle}
       className={
         "cursor-pointer transition-colors " +
+        (isHypervisor ? "bg-purple-50/40 dark:bg-purple-900/10 " : "") +
         (checked
           ? "bg-blue-50 dark:bg-blue-900/15"
-          : "hover:bg-gray-50 dark:hover:bg-slate-800/50")
+          : isHypervisor
+            ? "hover:bg-purple-50 dark:hover:bg-purple-900/20"
+            : "hover:bg-gray-50 dark:hover:bg-slate-800/50")
       }
     >
       <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
         <input type="checkbox" checked={checked} onChange={onToggle} className="rounded" />
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <KindBadge kind={vm.kind} />
       </td>
       <td className="px-3 py-2 font-mono text-xs text-gray-700 dark:text-slate-300 whitespace-nowrap">
         {vm.vc_name}
@@ -345,14 +406,21 @@ function VmRow({
       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums text-gray-700 dark:text-slate-300">
         {vm.vram_gb ?? "—"}
       </td>
+      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums text-gray-500 dark:text-slate-400">
+        {vm.storage_tb != null ? vm.storage_tb : <span className="text-gray-300 dark:text-slate-600">—</span>}
+      </td>
       <td className="px-3 py-2 whitespace-nowrap">
         <PowerBadge state={vm.power_state} />
       </td>
       <td className="px-3 py-2 text-xs text-gray-500 dark:text-slate-400 whitespace-nowrap">
         {vm.guest_hostname ?? <span className="text-gray-300 dark:text-slate-600">—</span>}
       </td>
-      <td className="px-3 py-2 text-xs font-mono text-gray-500 dark:text-slate-400 whitespace-nowrap">
-        {vm.guest_ip ?? <span className="text-gray-300 dark:text-slate-600">—</span>}
+      <td className="px-3 py-2 text-xs font-mono text-gray-500 dark:text-slate-400">
+        {isHypervisor && vm.all_ips && vm.all_ips.length > 0
+          ? <div className="flex flex-col gap-0.5">{vm.all_ips.map((ip) => <span key={ip}>{ip}</span>)}</div>
+          : vm.guest_ip
+            ? vm.guest_ip
+            : <span className="text-gray-300 dark:text-slate-600">—</span>}
       </td>
       <td className="px-3 py-2 text-xs text-gray-500 dark:text-slate-400 max-w-48 truncate">
         {vm.os_full_name ?? <span className="text-gray-300 dark:text-slate-600">—</span>}

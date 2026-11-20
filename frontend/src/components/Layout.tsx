@@ -15,10 +15,16 @@ const NAV_GROUPS: NavGroup[] = [
     label: "CMDB & Інвентар",
     icon: "🗃️",
     items: [
-      { to: "/comparison",   label: "CMDB vs Zabbix",  icon: "🔍" },
-      { to: "/cmdb-vcenter",    label: "CMDB vs vCenter",  icon: "🔎" },
-      { to: "/vcenter-new-vms", label: "Нові ВМ з vCenter", icon: "🆕" },
-      { to: "/cmdb-stats",      label: "Зміни CMDB",        icon: "📋" },
+      { to: "/comparison",       label: "CMDB vs Zabbix",    icon: "🔍" },
+      { to: "/cmdb-vcenter",     label: "CMDB vs vCenter",   icon: "🔎" },
+      { to: "/vcenter-new-vms",  label: "Нові ВМ з vCenter", icon: "🆕" },
+      { to: "/cmdb-stats",       label: "Зміни CMDB",        icon: "📋" },
+      { to: "/cmdb-completeness", label: "Completeness",     icon: "✅" },
+      { to: "/applications",     label: "Застосунки & ІТ-сервіси", icon: "🧩" },
+      { to: "/network-inventory", label: "Мережевий інвентар", icon: "🌐" },
+      { to: "/server-rooms",     label: "Серверні кімнати",  icon: "🏢" },
+      { to: "/infra-growth",     label: "Зростання інфра.",  icon: "📈" },
+      { to: "/jira-ci-links",   label: "CI в задачах Jira", icon: "🔗" },
     ],
   },
   {
@@ -26,13 +32,18 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Ресурси",
     icon: "💻",
     items: [
-      { to: "/resources",       label: "Ресурси ВМ",       icon: "💻" },
-      { to: "/physical-servers", label: "Фіз. сервери",     icon: "🗄️" },
-      { to: "/clusters",        label: "Кластери",          icon: "🖥️" },
-      { to: "/rightsizing",     label: "Rightsizing",       icon: "⚖️" },
-      { to: "/disk-analytics",  label: "Диски / Аналітика", icon: "💽" },
-      { to: "/disk-forecast",   label: "Диски / Прогноз",   icon: "📈" },
-      { to: "/capacity",        label: "Capacity Plan",     icon: "📐" },
+      { to: "/resources",        label: "Ресурси ВМ",        icon: "💻" },
+      { to: "/physical-servers", label: "Фіз. сервери",      icon: "🗄️" },
+      { to: "/clusters",         label: "Кластери",           icon: "🖥️" },
+      { to: "/rightsizing",      label: "Rightsizing",        icon: "⚖️" },
+      { to: "/disk-analytics",   label: "Диски / Аналітика", icon: "💽" },
+      { to: "/disk-forecast",    label: "Диски / Прогноз",   icon: "📈" },
+      { to: "/capacity",         label: "Capacity Plan",     icon: "📐" },
+      { to: "/vm-snapshots",     label: "VM Snapshots",      icon: "📸" },
+      { to: "/datastores",       label: "Datastores",        icon: "💾" },
+      { to: "/vm-age",           label: "Вік VM",            icon: "🕰️" },
+      { to: "/host-distribution", label: "Розподіл по хостах", icon: "🖧" },
+      { to: "/power-state",      label: "Power State",       icon: "⚡" },
     ],
   },
   {
@@ -40,11 +51,14 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Моніторинг",
     icon: "🔔",
     items: [
-      { to: "/problems",        label: "Проблеми ВМ",       icon: "⚠️" },
-      { to: "/zabbix-problems", label: "Zabbix Проблеми",   icon: "🚨" },
-      { to: "/network",         label: "Мережа / Проблеми", icon: "🌐" },
-      { to: "/vcenter",         label: "vCenter Health",    icon: "🏥" },
-      { to: "/uptime",          label: "Аптайм ВМ",         icon: "⏱️" },
+      { to: "/problems",         label: "Проблеми ВМ",        icon: "⚠️" },
+      { to: "/zabbix-problems",  label: "Zabbix Проблеми",    icon: "🚨" },
+      { to: "/zabbix-trends",    label: "Zabbix Тренди",      icon: "📊" },
+      { to: "/network",          label: "Мережа / Проблеми",  icon: "🌐" },
+      { to: "/vcenter",          label: "vCenter Health",     icon: "🏥" },
+      { to: "/uptime",           label: "Аптайм ВМ",          icon: "⏱️" },
+      { to: "/monitoring-coverage", label: "Покриття монітор.", icon: "📡" },
+      { to: "/backup-coverage",  label: "Backup Coverage",    icon: "💿" },
     ],
   },
   {
@@ -56,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/os-report",       label: "Операційні ОС",      icon: "🖥" },
       { to: "/zombie-servers",  label: "Зомбі-сервери",      icon: "💀" },
       { to: "/license-report",  label: "Ліцензії WS",        icon: "🪪" },
+      { to: "/vuln-scanner",    label: "CVE Scanner",        icon: "🔐" },
     ],
   },
   {
@@ -64,6 +79,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "🔄",
     items: [
       { to: "/vm-changes",     label: "Зміни VM",            icon: "🔄" },
+      { to: "/vm-migrations",  label: "Міграції VM",         icon: "🔀" },
       { to: "/decommission",   label: "Виведення ВМ",        icon: "🗑️" },
       { to: "/decommissioned", label: "Виведені з екс.",     icon: "📴" },
     ],
@@ -155,7 +171,7 @@ function NavGroupBlock({
       <div
         ref={contentRef}
         style={{
-          maxHeight: open ? `${group.items.length * 40}px` : "0px",
+          maxHeight: open ? `${group.items.length * 44}px` : "0px",
           overflow: "hidden",
           transition: "max-height 200ms ease",
         }}

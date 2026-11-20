@@ -4,17 +4,20 @@ import { api, type CmdbVcenterDiffItem, type CmdbVcenterSyncResult } from "../ap
 
 // ── Filter tabs ───────────────────────────────────────────────────────────────
 
-type FilterTab = "all" | "diff" | "vcpu" | "vram" | "cluster" | "cmdb_only" | "vm" | "physical";
+type FilterTab = "all" | "diff" | "vcpu" | "vram" | "cluster" | "ip" | "fqdn" | "cmdb_only" | "vm" | "physical" | "hypervisor";
 
 const TABS: { id: FilterTab; label: string }[] = [
-  { id: "all",       label: "Всі" },
-  { id: "diff",      label: "З відмінностями" },
-  { id: "vcpu",      label: "vCPU" },
-  { id: "vram",      label: "RAM (ГБ)" },
-  { id: "cluster",   label: "Кластер" },
-  { id: "cmdb_only", label: "Тільки CMDB" },
-  { id: "vm",        label: "Лише VM" },
-  { id: "physical",  label: "Лише фізичні" },
+  { id: "all",        label: "Всі" },
+  { id: "diff",       label: "З відмінностями" },
+  { id: "vcpu",       label: "CPU ядра" },
+  { id: "vram",       label: "RAM (ГБ)" },
+  { id: "cluster",    label: "Кластер" },
+  { id: "ip",         label: "IP адреса" },
+  { id: "fqdn",       label: "Hostname" },
+  { id: "cmdb_only",  label: "Тільки CMDB" },
+  { id: "vm",         label: "Лише VM" },
+  { id: "physical",   label: "Лише фізичні" },
+  { id: "hypervisor", label: "Гіпервізори" },
 ];
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
@@ -24,11 +27,13 @@ function DiffCell({
   vc,
   hasDiff,
   suffix = "",
+  cmdbHint,
 }: {
   cmdb: string | number | null;
   vc: string | number | null;
   hasDiff: boolean;
   suffix?: string;
+  cmdbHint?: string; // e.g. "2 × 16" for physical CPU breakdown
 }) {
   const fmt = (v: string | number | null) =>
     v != null ? `${v}${suffix}` : "—";
@@ -36,7 +41,10 @@ function DiffCell({
   if (!hasDiff) {
     return (
       <td className="px-4 py-2.5 text-sm text-gray-700 text-center">
-        {fmt(cmdb)}
+        <span>{fmt(cmdb)}</span>
+        {cmdbHint && (
+          <span className="block text-[10px] text-gray-400">{cmdbHint}</span>
+        )}
       </td>
     );
   }
@@ -46,6 +54,7 @@ function DiffCell({
       <div className="flex flex-col items-center gap-0.5">
         <span className="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-300 rounded px-1.5 py-0.5 leading-tight">
           CMDB: {fmt(cmdb)}
+          {cmdbHint && <span className="font-normal ml-1 opacity-75">({cmdbHint})</span>}
         </span>
         <span className="text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5 leading-tight">
           vCenter: {fmt(vc)}
@@ -146,13 +155,16 @@ export default function CmdbVcenter() {
     if (!data) return [];
     let items: CmdbVcenterDiffItem[] = [...data.items];
 
-    if (tab === "diff")          items = items.filter((i) => i.diff_count > 0);
-    else if (tab === "vcpu")     items = items.filter((i) => i.vcpu_diff);
-    else if (tab === "vram")     items = items.filter((i) => i.vram_diff);
-    else if (tab === "cluster")  items = items.filter((i) => i.cluster_diff);
-    else if (tab === "cmdb_only") items = items.filter((i) => !i.in_vcenter);
-    else if (tab === "vm")       items = items.filter((i) => i.ci_type === "vm");
-    else if (tab === "physical") items = items.filter((i) => i.ci_type === "physical");
+    if (tab === "diff")            items = items.filter((i) => i.diff_count > 0);
+    else if (tab === "vcpu")       items = items.filter((i) => i.vcpu_diff);
+    else if (tab === "vram")       items = items.filter((i) => i.vram_diff);
+    else if (tab === "cluster")    items = items.filter((i) => i.cluster_diff);
+    else if (tab === "ip")         items = items.filter((i) => i.ip_diff);
+    else if (tab === "fqdn")       items = items.filter((i) => i.fqdn_diff);
+    else if (tab === "cmdb_only")  items = items.filter((i) => !i.in_vcenter);
+    else if (tab === "vm")         items = items.filter((i) => i.ci_type === "vm");
+    else if (tab === "physical")   items = items.filter((i) => i.ci_type === "physical");
+    else if (tab === "hypervisor") items = items.filter((i) => i.ci_type === "hypervisor");
 
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -195,14 +207,16 @@ export default function CmdbVcenter() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
-        <SummaryCard label="Усього серверів CMDB"  value={data.total}           color="blue"  />
-        <SummaryCard label="Знайдено у vCenter"    value={data.matched}         color="blue"  />
-        <SummaryCard label="Тільки CMDB"           value={data.cmdb_only}       color="gray"  />
-        <SummaryCard label="З відмінностями"       value={data.with_diff}       color="red"   />
-        <SummaryCard label="Розбіжність vCPU"      value={data.vcpu_diff_count} color="amber" />
-        <SummaryCard label="Розбіжність RAM"       value={data.vram_diff_count} color="amber" />
-        <SummaryCard label="Розбіжність кластеру"  value={data.cluster_diff_count} color="amber" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-3">
+        <SummaryCard label="Усього CMDB"          value={data.total}              color="blue"  />
+        <SummaryCard label="В vCenter"            value={data.matched}            color="blue"  />
+        <SummaryCard label="Тільки CMDB"          value={data.cmdb_only}          color="gray"  />
+        <SummaryCard label="З відмінностями"      value={data.with_diff}          color="red"   />
+        <SummaryCard label="CPU ядра"             value={data.vcpu_diff_count}    color="amber" />
+        <SummaryCard label="RAM"                  value={data.vram_diff_count}    color="amber" />
+        <SummaryCard label="Кластер"              value={data.cluster_diff_count} color="amber" />
+        <SummaryCard label="IP адреса"            value={data.ip_diff_count}      color="amber" />
+        <SummaryCard label="Hostname"             value={data.fqdn_diff_count}    color="amber" />
       </div>
 
       {/* Sync result banner */}
@@ -210,6 +224,8 @@ export default function CmdbVcenter() {
         <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-900/20 dark:border-green-800 px-4 py-3 text-sm">
           <p className="font-medium text-green-700 dark:text-green-400">
             ✓ Синхронізацію завершено: оновлено {syncStatus.result.updated} ВМ
+            {syncStatus.result.clusters_created > 0 &&
+              `, створено кластерів: ${syncStatus.result.clusters_created}`}
             {syncStatus.result.cluster_skipped > 0 &&
               `, кластер не знайдено для ${syncStatus.result.cluster_skipped} ВМ`}
             {syncStatus.result.errors.length > 0 &&
@@ -309,17 +325,18 @@ export default function CmdbVcenter() {
               <tr className="bg-gray-50 border-b border-gray-200 text-xs text-gray-500 uppercase tracking-wide">
                 <th className="px-4 py-3 text-left font-semibold">Сервер</th>
                 <th className="px-4 py-3 text-center font-semibold">Різниць</th>
-                <th className="px-4 py-3 text-center font-semibold">vCPU</th>
+                <th className="px-4 py-3 text-center font-semibold">CPU ядра</th>
                 <th className="px-4 py-3 text-center font-semibold">RAM (ГБ)</th>
                 <th className="px-4 py-3 text-left font-semibold">Кластер</th>
                 <th className="px-4 py-3 text-left font-semibold">Стан vCenter</th>
-                <th className="px-4 py-3 text-left font-semibold">IP / FQDN</th>
+                <th className="px-4 py-3 text-left font-semibold">IP адреса</th>
+                <th className="px-4 py-3 text-left font-semibold">Hostname / FQDN</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {pageItems.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-gray-400">
+                  <td colSpan={8} className="px-4 py-10 text-center text-gray-400">
                     Нічого не знайдено
                   </td>
                 </tr>
@@ -339,11 +356,13 @@ export default function CmdbVcenter() {
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
                         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
-                          item.ci_type === "physical"
+                          item.ci_type === "hypervisor"
                             ? "bg-purple-100 text-purple-700"
+                            : item.ci_type === "physical"
+                            ? "bg-indigo-100 text-indigo-700"
                             : "bg-blue-100 text-blue-700"
                         }`}>
-                          {item.ci_type === "physical" ? "ФІЗИЧ." : "VM"}
+                          {item.ci_type === "hypervisor" ? "ГІПЕРВІЗ." : item.ci_type === "physical" ? "ФІЗИЧ." : "VM"}
                         </span>
                         <p className="font-medium text-gray-800 truncate">{item.name}</p>
                       </div>
@@ -361,11 +380,16 @@ export default function CmdbVcenter() {
                       )}
                     </td>
 
-                    {/* vCPU */}
+                    {/* vCPU / CPU cores */}
                     <DiffCell
                       cmdb={item.cmdb_vcpu}
                       vc={item.vc_vcpu}
                       hasDiff={item.vcpu_diff}
+                      cmdbHint={
+                        item.cmdb_cpu_count && item.cmdb_cpu_cores
+                          ? `${item.cmdb_cpu_count} × ${item.cmdb_cpu_cores}`
+                          : undefined
+                      }
                     />
 
                     {/* RAM */}
@@ -390,6 +414,9 @@ export default function CmdbVcenter() {
                       ) : (
                         <span className="text-sm text-gray-700">
                           {item.cmdb_cluster ?? item.vc_cluster ?? "—"}
+                          {item.ci_type === "hypervisor" && item.vc_cluster && (
+                            <span className="ml-1 text-[10px] text-gray-400">(vCenter)</span>
+                          )}
                         </span>
                       )}
                     </td>
@@ -399,12 +426,36 @@ export default function CmdbVcenter() {
                       <PowerBadge state={item.vc_power_state} />
                     </td>
 
-                    {/* IP / FQDN */}
+                    {/* IP address */}
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      {item.ip_diff ? (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-300 rounded px-1.5 py-0.5">
+                            CMDB: {item.primary_ip ?? "—"}
+                          </span>
+                          <span className="text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5">
+                            vCenter: {item.vc_ip ?? "—"}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-600">{item.primary_ip ?? "—"}</span>
+                      )}
+                    </td>
+
+                    {/* Hostname / FQDN */}
                     <td className="px-4 py-2.5">
-                      <p className="text-xs text-gray-600">{item.primary_ip ?? "—"}</p>
-                      {item.fqdn && item.fqdn !== item.primary_ip && (
-                        <p className="text-xs text-gray-400 truncate max-w-[160px]" title={item.fqdn}>
-                          {item.fqdn}
+                      {item.fqdn_diff ? (
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-300 rounded px-1.5 py-0.5 truncate max-w-[180px]" title={item.fqdn ?? ""}>
+                            CMDB: {item.fqdn ?? "—"}
+                          </span>
+                          <span className="text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5 truncate max-w-[180px]" title={item.vc_hostname ?? ""}>
+                            vCenter: {item.vc_hostname ?? "—"}
+                          </span>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-400 truncate max-w-[160px]" title={item.fqdn ?? ""}>
+                          {item.fqdn ?? "—"}
                         </p>
                       )}
                     </td>

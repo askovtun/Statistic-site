@@ -26,6 +26,22 @@ import DiskAnalyticsPage from "./pages/DiskAnalyticsPage";
 import NetworkPage from "./pages/NetworkPage";
 import VCenterNewVMs from "./pages/VCenterNewVMs";
 import LicenseReport from "./pages/LicenseReport";
+import VmMigrations from "./pages/VmMigrations";
+import MonitoringCoverage from "./pages/MonitoringCoverage";
+import VulnScanner from "./pages/VulnScanner";
+import VmSnapshots from "./pages/VmSnapshots";
+import ZabbixTrends from "./pages/ZabbixTrends";
+import CmdbCompleteness from "./pages/CmdbCompleteness";
+import PowerStatePage from "./pages/PowerStatePage";
+import InfraGrowth from "./pages/InfraGrowth";
+import VmAge from "./pages/VmAge";
+import HostDistribution from "./pages/HostDistribution";
+import ApplicationsPage from "./pages/ApplicationsPage";
+import NetworkInventory from "./pages/NetworkInventory";
+import ServerRoomsPage from "./pages/ServerRoomsPage";
+import BackupCoverage from "./pages/BackupCoverage";
+import DatastoresPage from "./pages/DatastoresPage";
+import JiraCiLinks from "./pages/JiraCiLinks";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -67,6 +83,22 @@ export default function App() {
             <Route path="network"         element={<NetworkPage />} />
             <Route path="vcenter-new-vms" element={<VCenterNewVMs />} />
             <Route path="license-report"  element={<LicenseReport />} />
+            <Route path="vm-migrations"  element={<VmMigrations />} />
+            <Route path="monitoring-coverage" element={<MonitoringCoverage />} />
+            <Route path="vuln-scanner" element={<VulnScanner />} />
+            <Route path="vm-snapshots" element={<VmSnapshots />} />
+            <Route path="zabbix-trends" element={<ZabbixTrends />} />
+            <Route path="cmdb-completeness" element={<CmdbCompleteness />} />
+            <Route path="power-state" element={<PowerStatePage />} />
+            <Route path="infra-growth" element={<InfraGrowth />} />
+            <Route path="vm-age" element={<VmAge />} />
+            <Route path="host-distribution" element={<HostDistribution />} />
+            <Route path="applications" element={<ApplicationsPage />} />
+            <Route path="network-inventory" element={<NetworkInventory />} />
+            <Route path="server-rooms" element={<ServerRoomsPage />} />
+            <Route path="backup-coverage" element={<BackupCoverage />} />
+            <Route path="datastores" element={<DatastoresPage />} />
+            <Route path="jira-ci-links" element={<JiraCiLinks />} />
           </Route>
         </Routes>
       </BrowserRouter>

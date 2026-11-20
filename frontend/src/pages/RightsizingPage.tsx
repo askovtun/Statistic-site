@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type ResourceItem } from "../api/client";
 import { exportToXlsx } from "../utils/exportXlsx";
@@ -219,7 +220,13 @@ export default function RightsizingPage() {
                   return (
                     <tr key={i.name} className="hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors">
                       <td className="px-4 py-2">
-                        <div className="font-medium text-gray-800 dark:text-slate-100 whitespace-nowrap">{i.name}</div>
+                        <Link
+                          to={`/resources?search=${encodeURIComponent(i.name)}&vm=${encodeURIComponent(i.name)}&days=${period}`}
+                          className="font-medium text-blue-700 dark:text-blue-400 hover:underline whitespace-nowrap"
+                          title="Відкрити графік ресурсів цієї ВМ"
+                        >
+                          {i.name}
+                        </Link>
                         {i.primary_ip && <div className="text-xs text-gray-400 dark:text-slate-500">{i.primary_ip}</div>}
                       </td>
                       <td className="px-4 py-2 text-xs text-gray-500 dark:text-slate-400">{i.cluster ?? "—"}</td>

@@ -137,10 +137,16 @@ def _bucket_history(
             hour_clock = clock - (clock % 3600)
             buckets.setdefault((hid, key, hour_clock), []).append(value)
 
-    return [
-        ("zabbix", hid, key, hour_clock, sum(vals) / len(vals), min(vals), max(vals), float(len(vals)))
-        for (hid, key, hour_clock), vals in buckets.items()
-    ]
+    result = []
+    for (hid, key, hour_clock), vals in buckets.items():
+        if key == zabbix_client.ITEM_DISK_FREE_PCT and len(vals) > 1:
+            # Multiple partitions normalized to one key: use min (worst partition).
+            # avg/min/max fields still reflect the per-partition spread for the record.
+            agg = min(vals)
+        else:
+            agg = sum(vals) / len(vals)
+        result.append(("zabbix", hid, key, hour_clock, agg, min(vals), max(vals), float(len(vals))))
+    return result
 
 
 async def _sync_metrics(hostids: list[str]) -> None:
